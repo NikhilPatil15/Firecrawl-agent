@@ -18,9 +18,9 @@ const suisseIntl = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Firecrawl Agent",
+  title: "ShopSmart",
   description:
-    "Open-source AI agent for autonomous web research, scraping, and structured data extraction.",
+    "AI-powered shopping agent that browses stores, compares products, and helps you buy smarter.",
   icons: { icon: "/favicon.png" },
 };
 

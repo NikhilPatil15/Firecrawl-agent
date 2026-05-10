@@ -1,4 +1,4 @@
-// ─── Firecrawl Agent Configuration ───
+// ─── ShopSmart Agent Configuration ───
 // Central config for all model selections and agent behavior.
 // Edit this file to change which models power the orchestrator,
 // sub-agents, and background tasks.

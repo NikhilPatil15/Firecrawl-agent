@@ -52,7 +52,7 @@ import { getOrchestratorModel, getExperimentalFeatures } from "@agent/_config";
 
 const defaultModel: ModelConfig = getOrchestratorModel();
 const experimentalFeatures = getExperimentalFeatures();
-const MODEL_PREFERENCE_STORAGE_KEY = "firecrawl-agent:last-model";
+const MODEL_PREFERENCE_STORAGE_KEY = "shopsmart:last-model";
 
 type CachedModelPreference = Pick<ModelConfig, "provider" | "model" | "baseURL" | "bin">;
 
@@ -150,10 +150,10 @@ const defaultConfig: AgentConfig = {
 };
 
 const PLACEHOLDER_PHRASES = [
-  "What data do you want to extract?",
-  "Compare pricing across competitor sites...",
-  "Research a company and summarize findings...",
-  "Extract structured data from any webpage...",
+  "What do you want to shop for?",
+  "Find the best deals on sneakers...",
+  "Compare prices across stores...",
+  "Buy a gift under 500 rupees...",
 ];
 
 function useTypewriter(phrases: string[], typingSpeed = 50, pauseMs = 2000, deleteSpeed = 30) {
@@ -968,6 +968,7 @@ export default function AgentPage(props: AgentPageProps) {
         </div>
         <div className="flex flex-col items-center gap-12 mb-32 mt-[min(18vh,160px)]">
           <SymbolColored width={56} height={80} />
+          <span className="text-title-h3 text-accent-black font-semibold">ShopSmart</span>
         </div>
 
         {/* Input card */}
@@ -983,7 +984,7 @@ export default function AgentPage(props: AgentPageProps) {
             <textarea
               ref={textareaRef}
               className="w-full bg-transparent text-body-large text-accent-black placeholder:text-black-alpha-32 focus:outline-none resize-none"
-              placeholder={typingPlaceholder || "What data do you want to extract?"}
+              placeholder={typingPlaceholder || "What do you want to shop for?"}
               rows={2}
               autoFocus
               value={config.prompt}
@@ -1239,6 +1240,7 @@ export default function AgentPage(props: AgentPageProps) {
           }}
         >
           <SymbolColored width={22} height={32} />
+          <span className="text-label-large text-accent-black font-semibold">ShopSmart</span>
         </button>
         <div className="ml-auto flex items-center gap-6">
           {isRunning && (

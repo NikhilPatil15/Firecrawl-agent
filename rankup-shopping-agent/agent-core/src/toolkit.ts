@@ -2,6 +2,86 @@ import { FirecrawlTools, scrapeBash } from "firecrawl-aisdk";
 import type { FirecrawlToolsConfig, Toolkit } from "./types";
 
 const DEFAULT_INTERACT_TIMEOUT_MS = 60_000;
+const RATE_LIMIT_MAX_RETRIES = 3;
+const RATE_LIMIT_DEFAULT_WAIT_MS = 3_000;
+
+/**
+ * Extract wait time from a Firecrawl rate-limit error message.
+ * Looks for "retry after Ns" pattern; falls back to default.
+ */
+function parseRetryWaitMs(errorMsg: string): number {
+  const match = errorMsg.match(/retry after (\d+)s/i);
+  if (match) return (parseInt(match[1], 10) + 1) * 1_000; // +1s buffer
+  return RATE_LIMIT_DEFAULT_WAIT_MS;
+}
+
+function isRateLimitError(err: unknown): boolean {
+  if (err instanceof Error) return /rate limit/i.test(err.message);
+  if (typeof err === "string") return /rate limit/i.test(err);
+  if (err && typeof err === "object" && "message" in err)
+    return /rate limit/i.test(String((err as { message: unknown }).message));
+  return false;
+}
+
+function isRateLimitResult(result: unknown): boolean {
+  if (typeof result === "string") return /Rate limit exceeded/i.test(result);
+  if (result && typeof result === "object") {
+    const str = JSON.stringify(result);
+    return /Rate limit exceeded/i.test(str);
+  }
+  return false;
+}
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Wrap a tool's execute to auto-retry on Firecrawl rate-limit errors.
+ * Retries up to RATE_LIMIT_MAX_RETRIES times with the delay from the error.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wrapWithRateLimitRetry<T extends { execute?: (...args: any[]) => any }>(
+  tool: T | undefined,
+): T | undefined {
+  if (!tool?.execute) return tool;
+  const original = (tool.execute as (input: unknown, opts?: unknown) => unknown).bind(tool);
+
+  const wrapped = async (input: unknown, opts?: unknown) => {
+    for (let attempt = 0; attempt <= RATE_LIMIT_MAX_RETRIES; attempt++) {
+      try {
+        const result = await original(input, opts);
+        // Some SDKs return the error as a result rather than throwing
+        if (isRateLimitResult(result) && attempt < RATE_LIMIT_MAX_RETRIES) {
+          const waitMs = parseRetryWaitMs(JSON.stringify(result));
+          await sleep(waitMs);
+          continue;
+        }
+        return result;
+      } catch (err) {
+        if (isRateLimitError(err) && attempt < RATE_LIMIT_MAX_RETRIES) {
+          const waitMs = parseRetryWaitMs(err instanceof Error ? err.message : String(err));
+          await sleep(waitMs);
+          continue;
+        }
+        throw err;
+      }
+    }
+  };
+
+  return { ...tool, execute: wrapped } as T;
+}
+
+/**
+ * Apply rate-limit retry to all tools in a tools object.
+ */
+function applyRateLimitRetry<T extends Record<string, unknown>>(tools: T): T {
+  const wrapped = { ...tools };
+  for (const key of Object.keys(wrapped)) {
+    if (wrapped[key] && typeof wrapped[key] === "object" && "execute" in (wrapped[key] as object)) {
+      (wrapped as Record<string, unknown>)[key] = wrapWithRateLimitRetry(wrapped[key] as never);
+    }
+  }
+  return wrapped;
+}
 
 /**
  * Strip top-level null/undefined/empty-string fields from an interact tool
@@ -155,9 +235,12 @@ export function buildFirecrawlToolkit(
     tools.interact = wrapInteractWithTimeout(tools.interact, interactTimeoutMs) as typeof tools.interact;
   }
 
+  // Apply rate-limit retry to all Firecrawl tools
+  const retriedTools = applyRateLimitRetry(tools);
+
   if (bashMode) {
-    const { scrape: _scrape, ...rest } = tools;
-    const bashTools = { ...rest, scrapeBash };
+    const { scrape: _scrape, ...rest } = retriedTools;
+    const bashTools = { ...rest, scrapeBash: wrapWithRateLimitRetry(scrapeBash) ?? scrapeBash };
 
     return {
       tools: bashTools as never,
@@ -177,13 +260,13 @@ export function buildFirecrawlToolkit(
         if (filtered.interact) {
           filtered.interact = wrapInteractWithTimeout(filtered.interact, interactTimeoutMs) as typeof filtered.interact;
         }
-        return { ...filtered, scrapeBash };
+        return applyRateLimitRetry({ ...filtered, scrapeBash });
       },
     };
   }
 
   return {
-    tools: tools as never,
+    tools: retriedTools as never,
     systemPrompt: systemPrompt ?? undefined,
     createFiltered: (enabled) => {
       const opts: Record<string, unknown> = {
@@ -200,7 +283,7 @@ export function buildFirecrawlToolkit(
       if (filtered.interact) {
         filtered.interact = wrapInteractWithTimeout(filtered.interact, interactTimeoutMs) as typeof filtered.interact;
       }
-      return filtered;
+      return applyRateLimitRetry(filtered);
     },
   };
 }

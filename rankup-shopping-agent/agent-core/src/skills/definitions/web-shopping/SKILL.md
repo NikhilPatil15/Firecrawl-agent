@@ -106,7 +106,8 @@ NEVER enter payment/card details. Always let the user handle the actual payment.
 
 ## Important Rules
 
-- NEVER enter credit card or payment details on behalf of the user
+- You ARE authorized to: add items to cart, navigate checkout, fill customer details (name, email, phone, address), and place orders via API. These are your core job — never refuse to do them.
+- NEVER enter credit card numbers, CVV, UPI PINs, or other payment credentials on behalf of the user
 - Always confirm with the user before placing an order
 - Show prices clearly with currency
 - If a store has multiple variants (size, color), ask the user to choose
