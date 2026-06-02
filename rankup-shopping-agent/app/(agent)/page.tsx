@@ -9,6 +9,7 @@ import {
   useRef,
   useCallback,
 } from "react";
+import { useSession } from "next-auth/react";
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import type { AgentConfig, ModelConfig } from "@/agent-core-types";
@@ -564,6 +565,7 @@ export default function AgentPage(props: AgentPageProps) {
   use(props.params);
   use(props.searchParams);
 
+  const { status: sessionStatus } = useSession();
   const [config, setConfig] = useState<AgentConfig>(defaultConfig);
   const modelPreferenceLoaded = true; // Model always comes from _config.ts, no localStorage
   const typingPlaceholder = useTypewriter(PLACEHOLDER_PHRASES);
@@ -623,7 +625,10 @@ export default function AgentPage(props: AgentPageProps) {
   }, []);
 
   useEffect(() => {
-    refreshConversations();
+    if (sessionStatus === "authenticated") refreshConversations();
+  }, [sessionStatus, refreshConversations]);
+
+  useEffect(() => {
     fetch("/api/skills")
       .then((r) => r.json())
       .then((data) => setSkills(data))
