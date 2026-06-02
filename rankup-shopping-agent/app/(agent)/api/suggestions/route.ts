@@ -14,7 +14,7 @@ export async function POST(req: Request) {
 
     const { text } = await generateText({
       model,
-      system: `You generate 3 short contextual follow-up suggestions based on a user's research task and what the agent found. Each should help the user dig deeper, compare, or take a different angle. Return exactly 3 suggestions, one per line. No numbering, no bullets, no quotes, no dashes, no extra text. Keep each under 50 characters.`,
+      system: `You generate 3 short contextual follow-up suggestions for a student shopping assistant in India. Each suggestion should help the student save money or shop smarter on Indian stores (Amazon.in, Flipkart, Myntra, Ajio, Croma, etc.) — e.g. "check coupons on CouponDunia", "compare on Flipkart", "find cheaper alternative", "check Flipkart Plus offer", "add to cart". Prices are in INR (₹). Return exactly 3 suggestions, one per line. No numbering, no bullets, no quotes, no dashes, no extra text. Keep each under 50 characters.`,
       prompt: `Original task: ${prompt}\n\nWhat the agent found so far:\n${summary}`,
       maxOutputTokens: 200,
     });

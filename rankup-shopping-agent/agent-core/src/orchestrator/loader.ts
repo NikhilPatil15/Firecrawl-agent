@@ -20,6 +20,7 @@ function interpolate(template: string, vars: Record<string, string>): string {
 
 export interface OrchestratorPromptVars {
   TODAY: string;
+  CURRENT_YEAR: string;
   FIRECRAWL_SYSTEM_PROMPT: string;
   RESEARCH_PLAN: string;
   WORKFLOW_STEPS: string;
@@ -68,6 +69,7 @@ export async function loadOrchestratorPrompt(
   // Interpolate the base system template
   const base = interpolate(system, {
     TODAY: vars.TODAY,
+    CURRENT_YEAR: vars.CURRENT_YEAR,
     FIRECRAWL_SYSTEM_PROMPT: vars.FIRECRAWL_SYSTEM_PROMPT,
     RESEARCH_PLAN: vars.RESEARCH_PLAN,
     WORKFLOW_STEPS: vars.WORKFLOW_STEPS,

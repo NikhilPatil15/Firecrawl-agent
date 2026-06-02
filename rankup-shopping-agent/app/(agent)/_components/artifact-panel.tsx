@@ -4,6 +4,8 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import type { UIMessage } from "ai";
 import { cn } from "@/utils/cn";
 import { codeToHtml } from "shiki/bundle/web";
+import { isProductData, ProductCards } from "./product-cards";
+import { extractFormattedOutput } from "@agent/_lib/extract-formatted-output";
 
 const shikiLangMap: Record<string, string> = {
   curl: "bash",
@@ -47,24 +49,6 @@ function HighlightedCode({ code, lang }: { code: string; lang: string }) {
   );
 }
 
-function isToolPart(part: { type: string }): boolean {
-  return part.type.startsWith("tool-") || part.type === "dynamic-tool";
-}
-
-// Same as plan-visualization: LangChain ToolMessage content is a string of
-// JSON-stringified tool output (from our adapter). Parse when possible.
-function normalizeToolOutput(raw: unknown): unknown {
-  if (typeof raw !== "string") return raw;
-  const trimmed = raw.trim();
-  if (!trimmed) return raw;
-  if (trimmed[0] !== "{" && trimmed[0] !== "[") return raw;
-  try { return JSON.parse(trimmed); } catch { return raw; }
-}
-
-interface FormattedOutput {
-  format: "text" | "json" | "csv";
-  content: string;
-}
 
 // Infer a JSON schema from actual data
 function inferSchema(value: unknown): Record<string, unknown> {
@@ -129,42 +113,6 @@ function mergeSchemas(schemas: Record<string, unknown>[]): Record<string, unknow
   return schemas[0];
 }
 
-function extractFormattedOutput(messages: UIMessage[]): FormattedOutput & { streaming: boolean } | null {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.role !== "assistant") continue;
-    for (const part of msg.parts) {
-      if (isToolPart(part)) {
-        const p = part as Record<string, unknown>;
-        const toolName = (p.toolName ?? (part.type as string).replace("tool-", "")) as string;
-        if (toolName !== "formatOutput") continue;
-
-        const state = (p.state ?? "") as string;
-        const rawOutput = normalizeToolOutput(p.output ?? p.result);
-        const output = (rawOutput && typeof rawOutput === "object")
-          ? rawOutput as { format?: string; content?: string }
-          : undefined;
-        // Treat a parseable, non-empty output object as complete — the bridge may
-        // not set state="output-available" for every run but the output is there.
-        const isComplete = state === "output-available" || state === "result" || !!(output?.format && output?.content);
-
-        if (isComplete && output?.format && output?.content) {
-          return { format: output.format as FormattedOutput["format"], content: output.content, streaming: false };
-        }
-
-        // Still streaming: use the tool input as preview
-        const input = (p.input ?? p.args ?? {}) as Record<string, unknown>;
-        const format = (input.format as string) ?? output?.format ?? "json";
-        let content = output?.content ?? "";
-        if (!content && input.data !== undefined) {
-          content = typeof input.data === "string" ? input.data : JSON.stringify(input.data, null, 2);
-        }
-        return { format: format as FormattedOutput["format"], content: content || "...", streaming: true };
-      }
-    }
-  }
-  return null;
-}
 
 function download(content: string, filename: string) {
   const blob = new Blob([content], { type: "text/plain" });
@@ -554,11 +502,15 @@ export default function ArtifactPanel({ messages, isRunning, onRequestFormat, on
   const [codeLang, setCodeLang] = useState<"curl" | "fetch" | "python">("curl");
   const [copied, setCopied] = useState(false);
 
-  // Reset code panel when new output arrives
+  // "auto" = show product cards if detected; "json" = force JsonViewer
+  const [viewMode, setViewMode] = useState<"auto" | "json">("auto");
+
+  // Reset code panel and view mode when new output arrives
   const prevContentRef = useRef<string | null>(null);
   useEffect(() => {
     if (formatted && !formatted.streaming && formatted.content !== prevContentRef.current) {
       setShowCode(false);
+      setViewMode("auto");
       prevContentRef.current = formatted.content;
     }
   }, [formatted]);
@@ -592,6 +544,7 @@ export default function ArtifactPanel({ messages, isRunning, onRequestFormat, on
   const isJson = fmt === "json";
   const isCsv = fmt === "csv";
   const ext = isJson ? "json" : "csv";
+  const hasProducts = isJson && !isStreaming && isProductData(formatted.content);
 
   return (
     <div className="h-full border-l border-border-faint bg-accent-white flex flex-col flex-shrink-0 w-full md:w-[50%] transition-all duration-200 overflow-hidden">
@@ -602,6 +555,17 @@ export default function ArtifactPanel({ messages, isRunning, onRequestFormat, on
             <span className="inline-block w-4 h-4 rounded-full bg-heat-100 animate-pulse" />
             Streaming...
           </span>
+        ) : hasProducts ? (
+          <div className="flex items-center gap-4">
+            <span className="px-8 py-4 rounded-6 text-mono-x-small bg-black-alpha-4 text-accent-black">Products</span>
+            <button
+              type="button"
+              className="px-8 py-4 rounded-6 text-mono-x-small text-black-alpha-32 hover:text-accent-black hover:bg-black-alpha-4 transition-all"
+              onClick={() => setViewMode("json")}
+            >
+              View as JSON
+            </button>
+          </div>
         ) : (
           <div className="flex items-center gap-4">
             {([
@@ -718,13 +682,12 @@ export default function ArtifactPanel({ messages, isRunning, onRequestFormat, on
         {isJson && (
           isStreaming
             ? <pre className="text-[13px] text-accent-black whitespace-pre-wrap font-mono leading-[1.7] p-14">{formatted.content}</pre>
-            : <JsonViewer data={formatted.content} />
+            : viewMode === "auto" && isProductData(formatted.content)
+              ? <ProductCards data={formatted.content} onViewJson={() => setViewMode("json")} />
+              : <JsonViewer data={formatted.content} />
         )}
         {isCsv && <CsvTable data={formatted.content} />}
         {!isJson && !isCsv && (
-          // Agent returned format "text" or markdown despite the prompt — show
-          // as raw preformatted text so the user at least sees it, but style it
-          // as an edge case rather than a blessed format.
           <pre className="text-[13px] text-accent-black whitespace-pre-wrap p-14">{formatted.content}</pre>
         )}
       </div>

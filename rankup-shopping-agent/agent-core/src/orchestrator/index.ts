@@ -142,17 +142,19 @@ export async function createOrchestrator(options: OrchestratorOptions) {
   const instructions = await loadOrchestratorPrompt(
     {
       TODAY: new Date().toISOString().split("T")[0],
+      CURRENT_YEAR: String(new Date().getFullYear()),
       FIRECRAWL_SYSTEM_PROMPT: toolkit.systemPrompt ?? "",
       RESEARCH_PLAN: hasStructuredOutput
         ? `\n${buildSchemaBlock(config.schema)}\n${buildFieldChecklist(config.schema)}\n${buildColumnsBlock(config.columns)}`
         : "",
       WORKFLOW_STEPS: `
-When handling a request:
-1. Determine the task type and what data the user needs.
+When handling a shopping request:
+1. Determine what the user wants: product search, comparison, deals, coupons, or checkout assist.
 2. If URLs are provided, call lookup_site_playbook for site-specific navigation.
-3. Execute — search, scrape, paginate; use spawnAgents only when many independent targets clearly warrant parallel fan-out.
-4. Verify completeness against the schema/checklist before presenting results.
-5. Call formatOutput with the collected data. The task is not done until formatOutput is called.`,
+3. Execute INLINE and FAST — search 2-3 Indian stores (plus one official brand store when relevant), and do ONE targeted scrape per store for the top few products (INCLUDING the imageUrl). Do NOT paginate. Do NOT spawnAgents for routine shopping. Gather 4-6 good candidates total, then stop — see the speed_policy.
+4. For each product candidate, make sure you have: name, price (number, INR), imageUrl, source store, sourceUrl. If imageUrl is missing from the search/listing page, scrape the individual product page to get it — it is critical for the UI.
+5. Write a SHORT text message (1-3 sentences) summarising your picks and explaining the Best Pick.
+6. Call formatOutput with format="json" and a JSON array of product objects matching the exact schema in the output_contract. THE TASK IS NOT DONE UNTIL formatOutput IS CALLED — text-only answers will not show product cards to the user.`,
       SKILL_CATALOG: skillCatalog,
       SCHEMA_BLOCK: buildSchemaBlock(config.schema),
       FIELD_CHECKLIST: buildFieldChecklist(config.schema),

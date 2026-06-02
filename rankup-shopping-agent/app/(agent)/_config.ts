@@ -12,8 +12,13 @@ export const config = {
   // ═══════════════════════════════════════════
   // Anthropic (Claude)
   // ═══════════════════════════════════════════
+  // The orchestrator is the "brain" — it must reliably perform checkout actions
+  // and call formatOutput. Haiku refuses agentic actions and skips formatOutput,
+  // so the orchestrator runs on Sonnet. Sub-agents (parallel scrapers) and
+  // background tasks stay on Haiku for speed/cost. The speed_policy + no-planning
+  // + no-parallel-fan-out changes keep Sonnet far faster than the original.
   orchestrator: { provider: "anthropic", model: "claude-sonnet-4-6" } satisfies ModelRef,
-  subAgent:     { provider: "anthropic", model: "claude-sonnet-4-6" } satisfies ModelRef,
+  subAgent:     { provider: "anthropic", model: "claude-haiku-4-5-20251001" } satisfies ModelRef,
   background:   { provider: "anthropic", model: "claude-haiku-4-5-20251001" } satisfies ModelRef,
 
   // ═══════════════════════════════════════════

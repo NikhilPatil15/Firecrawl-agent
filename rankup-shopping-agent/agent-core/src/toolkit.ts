@@ -4,6 +4,8 @@ import type { FirecrawlToolsConfig, Toolkit } from "./types";
 const DEFAULT_INTERACT_TIMEOUT_MS = 60_000;
 const RATE_LIMIT_MAX_RETRIES = 3;
 const RATE_LIMIT_DEFAULT_WAIT_MS = 3_000;
+const SESSION_RETRY_MAX = 3;
+const SESSION_RETRY_WAIT_MS = 5_000;
 
 /**
  * Extract wait time from a Firecrawl rate-limit error message.
@@ -33,6 +35,229 @@ function isRateLimitResult(result: unknown): boolean {
 }
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Detect Firecrawl's "we don't support this site" / enterprise-upsell error.
+ * Firecrawl returns this verbatim string for any domain on their no-scrape
+ * list (Amazon, sometimes Flipkart/Myntra, etc.). If we let it pass through
+ * to the LLM, the LLM will faithfully relay the apology + typeform URL to
+ * the user as the answer. We replace it with a clean, structured signal
+ * that tells the agent "this domain is unavailable, try another."
+ */
+const UNSUPPORTED_SITE_PATTERNS: RegExp[] = [
+  /we apologi[sz]e for the inconvenience.*do(?:n['']?| not) support this site/i,
+  /this (?:domain|site|url) is (?:not supported|blocked|unavailable)/i,
+  /enterprise.*intake form/i,
+  /typeform\.com\/to\/Ej6oydlg/i,
+];
+
+function isUnsupportedSiteString(s: string): boolean {
+  return UNSUPPORTED_SITE_PATTERNS.some((p) => p.test(s));
+}
+
+function isUnsupportedSiteResult(result: unknown): boolean {
+  if (typeof result === "string") return isUnsupportedSiteString(result);
+  if (result && typeof result === "object") {
+    // Common shapes: { error: "..." } or nested in `output`, `result`, etc.
+    try {
+      return isUnsupportedSiteString(JSON.stringify(result));
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function isUnsupportedSiteError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return msg ? isUnsupportedSiteString(msg) : false;
+}
+
+function extractDomainFromInput(input: unknown): string | null {
+  if (!input || typeof input !== "object") return null;
+  const obj = input as Record<string, unknown>;
+  const candidates = [obj.url, obj.urls, obj.query, obj.target];
+  for (const c of candidates) {
+    if (typeof c === "string") {
+      try { return new URL(c).hostname.replace(/^www\./, ""); } catch { /* not a url */ }
+      // search query — return as-is (might mention site:)
+      const siteMatch = c.match(/site:([^\s]+)/i);
+      if (siteMatch) return siteMatch[1];
+    }
+    if (Array.isArray(c) && typeof c[0] === "string") {
+      try { return new URL(c[0]).hostname.replace(/^www\./, ""); } catch { /* not a url */ }
+    }
+  }
+  return null;
+}
+
+/** Clean, agent-readable envelope replacing Firecrawl's apology text. */
+function unsupportedSiteEnvelope(input: unknown): {
+  error: string;
+  unsupportedSite: true;
+  domain: string | null;
+  hint: string;
+} {
+  const domain = extractDomainFromInput(input);
+  return {
+    error: domain
+      ? `The domain ${domain} is not accessible via automated browsing. Try a different Indian retailer (croma.com, reliancedigital.in, vijaysales.com, snapdeal.com, tatacliq.com, pepperfry.com, nykaa.com, ajio.com, meesho.com).`
+      : "This domain is not accessible via automated browsing. Try a different Indian retailer.",
+    unsupportedSite: true,
+    domain,
+    hint: "Do NOT mention this error to the end user. Silently switch to a different store and continue. If three retailers fail in a row, give the user a brief natural message without quoting any vendor error text.",
+  };
+}
+
+/**
+ * Wrap every Firecrawl tool's `execute` so any "unsupported site" response
+ * (string or object) is replaced with a clean envelope before the LLM sees it.
+ * The LLM literally cannot relay verbatim text it never received.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wrapWithUnsupportedSiteScrubber<T extends { execute?: (...args: any[]) => any }>(
+  tool: T | undefined,
+): T | undefined {
+  if (!tool?.execute) return tool;
+  const original = (tool.execute as (input: unknown, opts?: unknown) => unknown).bind(tool);
+
+  const wrapped = async (input: unknown, opts?: unknown) => {
+    try {
+      const result = await original(input, opts);
+      if (isUnsupportedSiteResult(result)) {
+        console.log("[firecrawl] unsupported-site response intercepted; replacing with clean envelope");
+        return unsupportedSiteEnvelope(input);
+      }
+      return result;
+    } catch (err) {
+      if (isUnsupportedSiteError(err)) {
+        console.log("[firecrawl] unsupported-site error intercepted; replacing with clean envelope");
+        return unsupportedSiteEnvelope(input);
+      }
+      throw err;
+    }
+  };
+
+  return { ...tool, execute: wrapped } as T;
+}
+
+function applyUnsupportedSiteScrub<T extends Record<string, unknown>>(tools: T): T {
+  const wrapped = { ...tools };
+  for (const key of Object.keys(wrapped)) {
+    if (wrapped[key] && typeof wrapped[key] === "object" && "execute" in (wrapped[key] as object)) {
+      (wrapped as Record<string, unknown>)[key] = wrapWithUnsupportedSiteScrubber(wrapped[key] as never);
+    }
+  }
+  return wrapped;
+}
+
+/**
+ * Deterministic guard against stale-year search queries. Models (especially
+ * Haiku) habitually append a past year like "2024"/"2025" out of training
+ * bias, which returns discontinued products and dead coupons. We rewrite any
+ * past year in a tool's `query` to the CURRENT year before the call runs — so
+ * it doesn't matter what the model typed.
+ */
+const CURRENT_YEAR = new Date().getFullYear();
+function fixStaleYears(query: string): string {
+  return query.replace(/\b20\d{2}\b/g, (m) =>
+    parseInt(m, 10) < CURRENT_YEAR ? String(CURRENT_YEAR) : m,
+  );
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wrapWithYearFix<T extends { execute?: (...args: any[]) => any }>(
+  tool: T | undefined,
+): T | undefined {
+  if (!tool?.execute) return tool;
+  const original = (tool.execute as (input: unknown, opts?: unknown) => unknown).bind(tool);
+  const wrapped = async (input: unknown, opts?: unknown) => {
+    if (input && typeof input === "object" && !Array.isArray(input)) {
+      const obj = input as Record<string, unknown>;
+      if (typeof obj.query === "string") {
+        const fixed = fixStaleYears(obj.query);
+        if (fixed !== obj.query) {
+          console.log(`[firecrawl] year-fix query: "${obj.query}" -> "${fixed}"`);
+          input = { ...obj, query: fixed };
+        }
+      }
+    }
+    return original(input, opts);
+  };
+  return { ...tool, execute: wrapped } as T;
+}
+function applyQueryYearFix<T extends Record<string, unknown>>(tools: T): T {
+  const wrapped = { ...tools };
+  for (const key of Object.keys(wrapped)) {
+    if (wrapped[key] && typeof wrapped[key] === "object" && "execute" in (wrapped[key] as object)) {
+      (wrapped as Record<string, unknown>)[key] = wrapWithYearFix(wrapped[key] as never);
+    }
+  }
+  return wrapped;
+}
+
+/**
+ * Detect Firecrawl concurrent browser session errors.
+ * These occur when the previous interact session hasn't fully closed
+ * (e.g. after a timeout or when back-to-back calls happen).
+ */
+const SESSION_ERROR_PATTERNS = [
+  /concurrent/i,
+  /active.?session/i,
+  /session.?limit/i,
+  /too many.?session/i,
+  /browser.?(?:limit|busy|unavailable|in use)/i,
+  /maximum.*(?:session|browser)/i,
+  /already.*(?:active|running|in use)/i,
+  /using \d+ of \d+/i,
+];
+
+function isSessionLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  return SESSION_ERROR_PATTERNS.some((p) => p.test(msg));
+}
+
+function isSessionLimitResult(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false;
+  const obj = result as Record<string, unknown>;
+  const errorStr = typeof obj.error === "string" ? obj.error : "";
+  return SESSION_ERROR_PATTERNS.some((p) => p.test(errorStr));
+}
+
+/**
+ * Wrap the interact tool to auto-retry on concurrent session limit errors.
+ * When Firecrawl rejects because a previous session is still alive (common
+ * after timeouts), we wait and retry instead of failing immediately.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function wrapWithSessionRetry<T extends { execute?: (...args: any[]) => any }>(
+  tool: T | undefined,
+): T | undefined {
+  if (!tool?.execute) return tool;
+  const original = (tool.execute as (input: unknown, opts?: unknown) => unknown).bind(tool);
+
+  const wrapped = async (input: unknown, opts?: unknown) => {
+    for (let attempt = 0; attempt <= SESSION_RETRY_MAX; attempt++) {
+      try {
+        const result = await original(input, opts);
+        if (isSessionLimitResult(result) && attempt < SESSION_RETRY_MAX) {
+          console.log(`[interact] session limit hit (attempt ${attempt + 1}/${SESSION_RETRY_MAX}), retrying in ${SESSION_RETRY_WAIT_MS}ms...`);
+          await sleep(SESSION_RETRY_WAIT_MS);
+          continue;
+        }
+        return result;
+      } catch (err) {
+        if (isSessionLimitError(err) && attempt < SESSION_RETRY_MAX) {
+          console.log(`[interact] session limit error (attempt ${attempt + 1}/${SESSION_RETRY_MAX}): ${err instanceof Error ? err.message : err}, retrying in ${SESSION_RETRY_WAIT_MS}ms...`);
+          await sleep(SESSION_RETRY_WAIT_MS);
+          continue;
+        }
+        throw err;
+      }
+    }
+  };
+
+  return { ...tool, execute: wrapped } as T;
+}
 
 /**
  * Wrap a tool's execute to auto-retry on Firecrawl rate-limit errors.
@@ -232,15 +457,21 @@ export function buildFirecrawlToolkit(
   });
 
   if (tools.interact) {
-    tools.interact = wrapInteractWithTimeout(tools.interact, interactTimeoutMs) as typeof tools.interact;
+    tools.interact = wrapWithSessionRetry(
+      wrapInteractWithTimeout(tools.interact, interactTimeoutMs),
+    ) as typeof tools.interact;
   }
 
-  // Apply rate-limit retry to all Firecrawl tools
-  const retriedTools = applyRateLimitRetry(tools);
+  // Apply rate-limit retry, then the unsupported-site scrubber on top so
+  // Firecrawl's enterprise-upsell text never reaches the LLM's context.
+  const retriedTools = applyQueryYearFix(applyUnsupportedSiteScrub(applyRateLimitRetry(tools)));
 
   if (bashMode) {
     const { scrape: _scrape, ...rest } = retriedTools;
-    const bashTools = { ...rest, scrapeBash: wrapWithRateLimitRetry(scrapeBash) ?? scrapeBash };
+    const bashTools = applyQueryYearFix({
+      ...rest,
+      scrapeBash: wrapWithUnsupportedSiteScrubber(wrapWithRateLimitRetry(scrapeBash) ?? scrapeBash),
+    });
 
     return {
       tools: bashTools as never,
@@ -260,7 +491,7 @@ export function buildFirecrawlToolkit(
         if (filtered.interact) {
           filtered.interact = wrapInteractWithTimeout(filtered.interact, interactTimeoutMs) as typeof filtered.interact;
         }
-        return applyRateLimitRetry({ ...filtered, scrapeBash });
+        return applyQueryYearFix(applyUnsupportedSiteScrub(applyRateLimitRetry({ ...filtered, scrapeBash })));
       },
     };
   }
@@ -283,7 +514,7 @@ export function buildFirecrawlToolkit(
       if (filtered.interact) {
         filtered.interact = wrapInteractWithTimeout(filtered.interact, interactTimeoutMs) as typeof filtered.interact;
       }
-      return applyRateLimitRetry(filtered);
+      return applyQueryYearFix(applyUnsupportedSiteScrub(applyRateLimitRetry(filtered)));
     },
   };
 }

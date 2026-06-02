@@ -1,0 +1,109 @@
+/*
+ * ShopSmart dark theme.
+ *
+ * The whole UI is tokenised: components reference --accent-white (surfaces),
+ * --accent-black (primary text), --black-alpha-* (text/fills/hairlines),
+ * --background-* (canvas) and --border-*. Dark mode is therefore a pure
+ * token re-map under `html.dark` — no component markup changes required.
+ *
+ * Palette is warm (Claude-style): a soft warm near-black canvas, warm off-white
+ * text, never a harsh pure black or pure white. The single accent stays our
+ * green (--heat-*), nudged a touch brighter so it reads on dark surfaces.
+ *
+ * `html.dark` has higher specificity than the `:root` block injected by
+ * <ColorStyles>, so these win regardless of stylesheet order.
+ */
+
+html.dark {
+  color-scheme: dark;
+
+  /* Brand green — slightly brighter for legibility on dark */
+  --heat-90: rgba(22, 189, 112, 0.9);
+  --heat-100: #14b86a;
+
+  /* Surfaces & primary text */
+  --accent-black: #ece8df; /* primary text -> warm off-white */
+  --accent-white: #2a2825; /* elevated surface (cards, inputs, menus) */
+
+  /* Canvas */
+  --background-base: #1b1a17;
+  --background-lighter: #232220;
+
+  /* Warm-white text / fill ramp (was black-on-light) */
+  --black-alpha-1: rgba(236, 232, 223, 0.022);
+  --black-alpha-2: rgba(236, 232, 223, 0.032);
+  --black-alpha-3: rgba(236, 232, 223, 0.042);
+  --black-alpha-4: rgba(236, 232, 223, 0.052);
+  --black-alpha-5: rgba(236, 232, 223, 0.062);
+  --black-alpha-6: rgba(236, 232, 223, 0.072);
+  --black-alpha-7: rgba(236, 232, 223, 0.085);
+  --black-alpha-8: rgba(236, 232, 223, 0.095);
+  --black-alpha-10: rgba(236, 232, 223, 0.115);
+  --black-alpha-12: rgba(236, 232, 223, 0.135);
+  --black-alpha-16: rgba(236, 232, 223, 0.165);
+  --black-alpha-20: rgba(236, 232, 223, 0.205);
+  --black-alpha-24: rgba(236, 232, 223, 0.245);
+  --black-alpha-32: rgba(236, 232, 223, 0.34);
+  --black-alpha-40: rgba(236, 232, 223, 0.45);
+  --black-alpha-48: rgba(236, 232, 223, 0.56);
+  --black-alpha-56: rgba(236, 232, 223, 0.66);
+  --black-alpha-64: rgba(236, 232, 223, 0.74);
+  --black-alpha-72: rgba(236, 232, 223, 0.82);
+  --black-alpha-88: rgba(236, 232, 223, 0.92);
+
+  /* Borders / hairlines (warm dark greys) */
+  --border-faint: #322f2b;
+  --border-muted: #3b3732;
+  --border-loud: #45403a;
+
+  --illustrations-faint: #322f2b;
+  --illustrations-muted: #45403a;
+  --illustrations-default: #524c43;
+
+  /* shadcn / streamdown / JsonViewer system (HSL channels) */
+  --background: 40 6% 10%;
+  --foreground: 40 22% 90%;
+  --card: 40 6% 15%;
+  --card-foreground: 40 22% 90%;
+  --popover: 40 6% 14%;
+  --popover-foreground: 40 22% 90%;
+  --primary: 40 22% 90%;
+  --primary-foreground: 40 6% 12%;
+  --secondary: 40 5% 20%;
+  --secondary-foreground: 40 22% 90%;
+  --muted: 40 5% 20%;
+  --muted-foreground: 40 8% 62%;
+  --accent: 40 5% 22%;
+  --accent-foreground: 40 22% 90%;
+  --destructive: 0 62% 52%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 40 6% 24%;
+  --input: 40 6% 24%;
+  --ring: 152 80% 38%;
+  --sidebar: 40 6% 12%;
+  --sidebar-foreground: 40 22% 90%;
+  --sidebar-border: 40 6% 24%;
+  --sidebar-accent: 40 5% 22%;
+  --sidebar-accent-foreground: 40 22% 90%;
+}
+
+/* Grain reads as "lighten" on dark instead of "multiply" (which would vanish) */
+html.dark body::after {
+  mix-blend-mode: screen;
+  opacity: 0.02;
+}
+html.dark .bg-grain {
+  mix-blend-mode: screen;
+  opacity: 0.025;
+}
+
+/* Smooth the moment of theme switch on the big surfaces */
+html.theme-anim,
+html.theme-anim body,
+html.theme-anim body * {
+  transition:
+    background-color 0.28s ease,
+    border-color 0.28s ease,
+    color 0.28s ease,
+    box-shadow 0.28s ease !important;
+}

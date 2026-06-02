@@ -16,34 +16,60 @@ import { AVAILABLE_MODELS, PROVIDER_META, type Provider } from "@agent/_lib/conf
 import { useACPChat } from "./_hooks/use-acp-chat";
 import ProviderModelIcon from "./_components/provider-icon";
 import AgentInput from "./_components/agent-input";
-import PlanVisualization from "./_components/plan-visualization";
 import SettingsPanel from "./_components/settings-panel";
+import UserMenu from "./_components/user-menu";
+import { ThemeToggle } from "./_components/theme";
+import HistoryPanel, { type ConversationRow } from "./_components/history-panel";
+import MicButton, { type MicState } from "./_components/mic-button";
 import type { UploadedFile } from "@/agent-core-types";
 
 import StreamdownBlock from "@/components/shared/streamdown-block";
 import ArtifactPanel, { JsonViewer } from "./_components/artifact-panel";
+import { isProductData, ProductCards, type ProductPick } from "./_components/product-cards";
+import { extractMessageFormatted, isToolPart, synthesizeFallbackProducts } from "./_lib/extract-formatted-output";
 import SymbolColored from "@/components/shared/icons/symbol-colored";
 import { cn } from "@/utils/cn";
 
-function GitHubIcon() {
+function HistoryButton({ onClick }: { onClick: () => void }) {
   return (
-    <svg height="20" viewBox="0 0 24 24" width="20" fill="currentColor">
-      <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
-    </svg>
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label="Chat history"
+      title="Your chats"
+      className="flex items-center gap-7 pl-11 pr-13 py-8 rounded-10 text-label-small text-black-alpha-56 bg-black-alpha-4 hover:bg-black-alpha-8 hover:text-accent-black transition-all"
+    >
+      <svg fill="none" height="18" viewBox="0 0 24 24" width="18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-8 5M3 4v4h4" />
+        <path d="M12 8v4l3 2" />
+      </svg>
+      <span className="hidden sm:inline">History</span>
+    </button>
+  );
+}
+
+function NewChatButton({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label="New chat"
+      title="New chat"
+      className="flex items-center gap-7 pl-11 pr-13 py-8 rounded-10 text-label-small text-black-alpha-56 bg-black-alpha-4 hover:bg-black-alpha-8 hover:text-accent-black transition-all"
+    >
+      <svg fill="none" height="18" viewBox="0 0 24 24" width="18" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M12 5v14M5 12h14" />
+      </svg>
+      <span className="hidden sm:inline">New chat</span>
+    </button>
   );
 }
 
 function HeaderLinks() {
   return (
-    <div className="flex items-center gap-6">
-      <a
-        href="https://github.com/firecrawl/firecrawl-agent"
-        target="_blank"
-        rel="noopener noreferrer"
-        className="p-6 rounded-8 text-black-alpha-40 bg-black-alpha-4 hover:bg-black-alpha-8 hover:text-accent-black transition-all"
-      >
-        <GitHubIcon />
-      </a>
+    <div className="flex items-center gap-8">
+      <ThemeToggle />
+      <UserMenu />
     </div>
   );
 }
@@ -146,15 +172,61 @@ const defaultConfig: AgentConfig = {
   model: defaultModel,
   skills: [],
   subAgents: [],
-  maxSteps: 50,
+  // Tight enough to stay fast, with headroom for checkout flows (several
+  // interact steps). The speed_policy keeps most search/compare runs well under.
+  maxSteps: 36,
 };
 
 const PLACEHOLDER_PHRASES = [
-  "What do you want to shop for?",
-  "Find the best deals on sneakers...",
-  "Compare prices across stores...",
-  "Buy a gift under 500 rupees...",
+  "Find me the best student deals in India...",
+  "Coupon codes for Flipkart and Myntra...",
+  "Compare textbook prices on Amazon.in and Flipkart...",
+  "Cheapest laptop under ₹50,000 for college...",
+  "Add a 65W charger to my cart and check out...",
 ];
+
+// Build a plain-text transcript of an assistant turn (final text + tool
+// outputs) to feed the deterministic /api/format-products extractor when a run
+// produced no cards on its own.
+function buildTurnTranscript(msgs: { parts: Array<{ type: string }> }[]): string {
+  let out = "";
+  for (const m of msgs) {
+    for (const part of m.parts as Array<Record<string, unknown> & { type: string }>) {
+      if (part.type === "text" && typeof part.text === "string") {
+        out += part.text + "\n";
+      } else if (isToolPart(part)) {
+        const output = part.output ?? part.result;
+        if (output != null) {
+          let s = "";
+          try { s = typeof output === "string" ? output : JSON.stringify(output); } catch { s = ""; }
+          if (s) out += s.slice(0, 4000) + "\n";
+        }
+      } else if (part.type === "data-tool-output" && part.data) {
+        const output = (part.data as { output?: unknown }).output;
+        if (output != null) {
+          let s = "";
+          try { s = typeof output === "string" ? output : JSON.stringify(output); } catch { s = ""; }
+          if (s) out += s.slice(0, 4000) + "\n";
+        }
+      }
+    }
+  }
+  return out.slice(0, 18000);
+}
+
+// Persist which conversation is open so a page refresh restores it.
+const ACTIVE_CONV_KEY = "shopsmart:active-conversation";
+
+function firstUrlIn(text: string): string | undefined {
+  const m = text.match(/https?:\/\/[^\s)]+/);
+  return m ? m[0].replace(/[.,)]+$/, "") : undefined;
+}
+
+function isFormatOutputPart(p: { type: string; toolName?: string }): boolean {
+  if (p.type === "tool-formatOutput") return true;
+  if (p.type === "dynamic-tool" && p.toolName === "formatOutput") return true;
+  return false;
+}
 
 function useTypewriter(phrases: string[], typingSpeed = 50, pauseMs = 2000, deleteSpeed = 30) {
   const [display, setDisplay] = useState("");
@@ -482,119 +554,6 @@ function PlusMenu({
   );
 }
 
-function ModelDropdown({
-  value,
-  onChange,
-  onClose,
-  acpAgents,
-  configuredProviders,
-}: {
-  value: ModelConfig;
-  onChange: (config: ModelConfig) => void;
-  onClose: () => void;
-  acpAgents?: { name: string; bin: string; displayName: string }[];
-  configuredProviders?: Set<string>;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, [onClose]);
-
-  const providerKeys = (Object.keys(AVAILABLE_MODELS) as string[]).filter((providerId) => {
-    if ((providerId as string) === "acp") return false;
-    const providerKeyId = PROVIDER_KEY_IDS[providerId as ModelConfig["provider"]];
-    return providerKeyId ? configuredProviders?.has(providerKeyId) ?? false : false;
-  });
-
-  return (
-    <div
-      ref={ref}
-      className="absolute bottom-full right-0 mb-6 w-220 bg-accent-white rounded-12 border border-border-muted overflow-hidden"
-      style={{
-        boxShadow:
-          "0px 16px 32px -8px rgba(0,0,0,0.08), 0px 4px 12px -2px rgba(0,0,0,0.04)",
-        maxHeight: "min(360px, 50vh)",
-      }}
-    >
-      <div className="overflow-y-auto" style={{ maxHeight: "min(360px, 50vh)", scrollbarWidth: "thin" }}>
-      {providerKeys.map((providerId) => {
-        const meta = PROVIDER_META[providerId];
-        const models = AVAILABLE_MODELS[providerId];
-        if (!models) return null;
-        return (
-          <div key={providerId}>
-            <div className="flex items-center gap-6 text-label-x-small text-black-alpha-40 px-10 pt-6 pb-1">
-              <ProviderModelIcon icon={meta.icon} size={12} />
-              {meta.name}
-            </div>
-            {models.map((m) => (
-              <button
-                key={m.id}
-                type="button"
-                className={cn(
-                  "w-full text-left px-10 py-4 text-body-small transition-all flex items-center gap-6",
-                  value.provider === providerId && value.model === m.id
-                    ? "bg-heat-8 text-heat-100"
-                    : "hover:bg-black-alpha-2 text-accent-black",
-                )}
-                onClick={() => {
-                  onChange({ ...value, provider: providerId as ModelConfig["provider"], model: m.id });
-                  onClose();
-                }}
-              >
-                <ProviderModelIcon icon={m.icon} size={14} />
-                {m.name}
-              </button>
-            ))}
-          </div>
-        );
-      })}
-      {providerKeys.length === 0 && (!acpAgents || acpAgents.length === 0) && (
-        <div className="px-12 py-14 text-body-small text-black-alpha-40">
-          No configured model providers detected yet.
-        </div>
-      )}
-      {acpAgents && acpAgents.length > 0 && (
-        <div>
-          <div className="flex items-center gap-6 text-label-x-small text-black-alpha-40 px-10 pt-6 pb-1">
-            <svg fill="none" height="12" viewBox="0 0 24 24" width="12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M16 18l6-6-6-6M8 6l-6 6 6 6" />
-            </svg>
-            Local Agent (ACP)
-          </div>
-          {acpAgents.map((a) => (
-            <button
-              key={a.bin}
-              type="button"
-              className={cn(
-                "w-full text-left px-10 py-4 text-body-small transition-all flex items-center gap-6",
-                (value.provider as string) === "acp" && value.model === a.bin
-                  ? "bg-heat-8 text-heat-100"
-                  : "hover:bg-black-alpha-2 text-accent-black",
-              )}
-              onClick={() => {
-                onChange({ provider: "acp" as ModelConfig["provider"], model: a.bin, bin: a.bin });
-                onClose();
-              }}
-            >
-              <svg fill="none" height="14" viewBox="0 0 24 24" width="14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M16 18l6-6-6-6M8 6l-6 6 6 6" />
-              </svg>
-              {a.displayName}
-            </button>
-          ))}
-        </div>
-      )}
-      </div>
-    </div>
-  );
-}
-
 /** Next.js 16 passes `params` / `searchParams` as Promises; unwrap so DevTools / runtime don't enumerate Promises (sync-dynamic-apis). */
 type AgentPageProps = {
   params: Promise<Record<string, string | string[]>>;
@@ -613,7 +572,6 @@ export default function AgentPage(props: AgentPageProps) {
   const [followUpMentionQuery, setFollowUpMentionQuery] = useState<string | null>(null);
   const [followUpMentionStart, setFollowUpMentionStart] = useState(0);
   const [showPlus, setShowPlus] = useState(false);
-  const [showModel, setShowModel] = useState(false);
   const [skills, setSkills] = useState<SkillInfo[] | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -629,6 +587,18 @@ export default function AgentPage(props: AgentPageProps) {
   const [generatedDocContent, setGeneratedDocContent] = useState<string | null>(null);
   const [generatedDocLabel, setGeneratedDocLabel] = useState<string | null>(null);
   const [artifactOpen, setArtifactOpen] = useState(false);
+  // Deterministic card-recovery: extracted product JSON keyed by assistant
+  // message id, plus an in-flight flag for the "Formatting results…" state.
+  const [recovered, setRecovered] = useState<Record<string, string>>({});
+  const [recovering, setRecovering] = useState<Record<string, boolean>>({});
+
+  // Chat history (Supabase).
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<ConversationRow[]>([]);
+  const [historyConfigured, setHistoryConfigured] = useState(false);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [restoring, setRestoring] = useState(false);
+  const [voiceState, setVoiceState] = useState<MicState>("idle");
   const [artifactSkillMode, setArtifactSkillMode] = useState(false);
   const [acpAgents, setAcpAgents] = useState<{ name: string; bin: string; displayName: string; available: boolean }[]>([]);
   const [configuredProviders, setConfiguredProviders] = useState<Set<string>>(new Set());
@@ -642,7 +612,18 @@ export default function AgentPage(props: AgentPageProps) {
   const [sparkError, setSparkError] = useState<string | null>(null);
 
 
+  const refreshConversations = useCallback(() => {
+    fetch("/api/conversations")
+      .then((r) => (r.ok ? r.json() : { conversations: [], configured: false }))
+      .then((d: { conversations?: ConversationRow[]; configured?: boolean }) => {
+        setConversations(d.conversations ?? []);
+        setHistoryConfigured(!!d.configured);
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
+    refreshConversations();
     fetch("/api/skills")
       .then((r) => r.json())
       .then((data) => setSkills(data))
@@ -721,6 +702,187 @@ export default function AgentPage(props: AgentPageProps) {
 
   const isRunning = status === "streaming" || status === "submitted";
 
+  // Refs so the save effect always reads the current conversation id / config.
+  const conversationIdRef = useRef<string | null>(null);
+  conversationIdRef.current = conversationId;
+  const historyConfiguredRef = useRef(false);
+  historyConfiguredRef.current = historyConfigured;
+  const recoveredRef = useRef<Record<string, string>>({});
+  recoveredRef.current = recovered;
+
+  // Persist the full transcript to Supabase (creates the conversation lazily).
+  const saveTranscript = useCallback(
+    async (msgs: typeof messages) => {
+      if (isACP || !historyConfiguredRef.current || msgs.length === 0) return;
+      const firstUser = msgs.find((m) => m.role === "user");
+      const title = firstUser
+        ? firstUser.parts
+            .filter((p) => p.type === "text")
+            .map((p) => (p as { text: string }).text)
+            .join(" ")
+            .trim()
+            .slice(0, 80) || "New chat"
+        : "New chat";
+      // Store only what we need to re-render on restore: text + the formatOutput
+      // card data, plus any deterministic-recovery cards baked in as a
+      // `data-cards` part. Dropping bulky raw tool outputs keeps the row small
+      // and restore fast.
+      const stored = msgs.map((m) => {
+        const parts = (m.parts as Array<Record<string, unknown> & { type: string; toolName?: string }>)
+          .filter((p) => p.type === "text" || isFormatOutputPart(p))
+          .map((p) => p as unknown);
+        const rec = recoveredRef.current[m.id];
+        if (rec) parts.push({ type: "data-cards", data: { content: rec } });
+        return { role: m.role, parts };
+      });
+      try {
+        let cid = conversationIdRef.current;
+        if (!cid) {
+          const res = await fetch("/api/conversations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ title }),
+          });
+          const d = await res.json();
+          if (!d.id) return;
+          cid = d.id;
+          conversationIdRef.current = cid;
+          setConversationId(cid);
+          try { localStorage.setItem(ACTIVE_CONV_KEY, cid!); } catch { /* ignore */ }
+        }
+        await fetch(`/api/conversations/${cid}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: stored, title }),
+        });
+        refreshConversations();
+      } catch {
+        /* best-effort */
+      }
+    },
+    [isACP, refreshConversations],
+  );
+
+  const loadConversation = async (id: string) => {
+    try {
+      const res = await fetch(`/api/conversations/${id}`);
+      if (!res.ok) {
+        try { localStorage.removeItem(ACTIVE_CONV_KEY); } catch { /* ignore */ }
+        setHasSubmitted(false); // restore failed → fall back to the landing
+        return;
+      }
+      const d = (await res.json()) as { messages?: { id?: string; role: string; parts: unknown }[] };
+      const msgs = (d.messages ?? []).map((m) => ({
+        id: m.id ?? crypto.randomUUID(),
+        role: m.role as "user" | "assistant" | "system",
+        parts: (m.parts ?? []) as never,
+      }));
+      sdkChat.setMessages(msgs as never);
+      setConversationId(id);
+      try { localStorage.setItem(ACTIVE_CONV_KEY, id); } catch { /* ignore */ }
+      setHasSubmitted(true);
+      setSparkMode(false);
+      // Re-hydrate recovery cards baked into the transcript as data-cards parts.
+      const recMap: Record<string, string> = {};
+      for (const m of msgs) {
+        for (const p of m.parts as Array<{ type?: string; data?: { content?: string } }>) {
+          if (p?.type === "data-cards" && p.data?.content) recMap[m.id] = p.data.content;
+        }
+      }
+      setRecovered(recMap);
+      setRecovering({});
+
+      // Old chats (saved before cards were baked in) have neither a stored
+      // formatOutput nor data-cards — regenerate cards from the transcript so
+      // they appear on restore too. New chats already carry data-cards and skip.
+      const convUrl = (() => {
+        for (const m of msgs) {
+          if (m.role !== "user") continue;
+          const t = (m.parts as Array<{ type?: string; text?: string }>)
+            .filter((p) => p.type === "text").map((p) => p.text ?? "").join(" ");
+          const u = firstUrlIn(t);
+          if (u) return u;
+        }
+        return undefined;
+      })();
+      for (const m of msgs) {
+        if (m.role !== "assistant" || recMap[m.id]) continue;
+        const parts = m.parts as Array<Record<string, unknown> & { type: string; output?: { format?: string; content?: string } }>;
+        const hasFmt = parts.some((p) => isFormatOutputPart(p) && p.output?.format && p.output?.content);
+        if (hasFmt) continue;
+        const transcript = buildTurnTranscript([m]);
+        if (transcript.trim().length < 40 && !convUrl) continue;
+        setRecovering((s) => ({ ...s, [m.id]: true }));
+        fetch("/api/format-products", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: transcript, url: convUrl }),
+        })
+          .then((r) => r.json())
+          .then((d) => {
+            if (Array.isArray(d.items) && d.items.length > 0) {
+              setRecovered((s) => ({ ...s, [m.id]: JSON.stringify(d.items) }));
+            }
+          })
+          .catch(() => {})
+          .finally(() => setRecovering((s) => { const n = { ...s }; delete n[m.id]; return n; }));
+      }
+      recoveredForUser.current = null;
+    } catch {
+      /* ignore */
+    }
+  };
+
+  const newChat = () => {
+    clearMessages();
+    setConversationId(null);
+    conversationIdRef.current = null;
+    try { localStorage.removeItem(ACTIVE_CONV_KEY); } catch { /* ignore */ }
+    setHasSubmitted(false);
+    setConfig(defaultConfig);
+    setSuggestions([]);
+    setRecovered({});
+    setRecovering({});
+    recoveredForUser.current = null;
+    setSparkMode(false);
+  };
+
+  // Clicking a product card sends a "buy this one" follow-up to the agent.
+  const buyProduct = (pick: ProductPick) => {
+    let line = `Buy me the ${pick.name}`;
+    if (pick.priceLabel) line += ` (${pick.priceLabel})`;
+    if (pick.source) line += ` from ${pick.source}`;
+    const text = `${line}. Add it to my cart and take me to checkout.`;
+    setSuggestions([]);
+    setFollowUp("");
+    if (!isRunning) sendMessage({ text });
+  };
+
+  const deleteConversation = async (id: string) => {
+    try {
+      await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+    } catch {
+      /* ignore */
+    }
+    if (id === conversationId) newChat();
+    refreshConversations();
+  };
+
+  // Restore the active conversation on page load so a refresh keeps the chat.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    if (restoredRef.current) return;
+    restoredRef.current = true;
+    let stored: string | null = null;
+    try { stored = localStorage.getItem(ACTIVE_CONV_KEY); } catch { /* ignore */ }
+    if (stored) {
+      setHasSubmitted(true); // show the chat shell immediately — no landing flash
+      setRestoring(true);
+      loadConversation(stored).finally(() => setRestoring(false));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Auto-scroll to bottom when streaming
   useEffect(() => {
     if (!isRunning || !scrollRef.current) return;
@@ -793,10 +955,100 @@ export default function AgentPage(props: AgentPageProps) {
     return { fc, toolCalls, agentTurns, llmCalls, orchestratorIn, orchestratorOut, workerInputTokens, workerOutputTokens };
   }, [messages]);
 
+  // Only the LAST assistant message of each turn shows its text — the
+  // intermediate "Now let me scrape…" narration is hidden so the feed stays
+  // clean (the live activity log covers in-progress steps and vanishes on done).
+  const finalAssistantIds = useMemo(() => {
+    const set = new Set<string>();
+    let lastAssistant: string | null = null;
+    for (const m of messages) {
+      if (m.role === "user") {
+        if (lastAssistant) set.add(lastAssistant);
+        lastAssistant = null;
+      } else if (m.role === "assistant") {
+        lastAssistant = m.id;
+      }
+    }
+    if (lastAssistant) set.add(lastAssistant);
+    return set;
+  }, [messages]);
+
+  // Live interact browser sessions (the "watch the agent browse" screens),
+  // emitted by the route as data-interact-liveview parts, keyed by scrapeId.
+  const liveViews = useMemo(() => {
+    const map = new Map<string, { liveViewUrl: string; interactiveLiveViewUrl: string | null; url: string }>();
+    for (const m of messages) {
+      for (const part of m.parts as Array<{ type?: string; data?: Record<string, unknown> }>) {
+        if (part.type === "data-interact-liveview" && part.data) {
+          const d = part.data as { scrapeId?: string; liveViewUrl?: string; interactiveLiveViewUrl?: string | null; url?: string };
+          if (d.scrapeId && d.liveViewUrl) {
+            map.set(d.scrapeId, {
+              liveViewUrl: d.liveViewUrl,
+              interactiveLiveViewUrl: d.interactiveLiveViewUrl ?? null,
+              url: d.url ?? "",
+            });
+          }
+        }
+      }
+    }
+    return Array.from(map.values());
+  }, [messages]);
+
   const prevIsRunning = useRef(false);
+  const recoveredForUser = useRef<string | null>(null);
 
   useEffect(() => {
     if (prevIsRunning.current && !isRunning && messages.length > 0) {
+      // Find the start of the current turn (last user message).
+      let lastUserIdx = -1;
+      for (let i = messages.length - 1; i >= 0; i--) {
+        if (messages[i].role === "user") { lastUserIdx = i; break; }
+      }
+      const lastUserId = lastUserIdx >= 0 ? messages[lastUserIdx].id : null;
+
+      // Deterministic card recovery: the turn did real work but produced NO
+      // cards (no formatOutput, fallback couldn't parse). Rather than nudging
+      // the model (which may re-scrape or refuse), extract products ourselves
+      // via the forced-structured-output endpoint. Fires once per user turn.
+      const turnAssistants = messages
+        .slice(lastUserIdx + 1)
+        .filter((m) => m.role === "assistant");
+      const didToolWork = turnAssistants.some((m) => m.parts.some(isToolPart));
+      const producedCards = turnAssistants.some((m) => {
+        const f = extractMessageFormatted(m) ?? synthesizeFallbackProducts(m);
+        return !!f && !f.streaming && f.format === "json" && isProductData(f.content);
+      });
+      if (
+        turnAssistants.length > 0 && didToolWork && !producedCards &&
+        recoveredForUser.current !== lastUserId
+      ) {
+        recoveredForUser.current = lastUserId;
+        const last = turnAssistants[turnAssistants.length - 1];
+        const transcript = buildTurnTranscript(turnAssistants);
+        const userUrl = lastUserIdx >= 0
+          ? firstUrlIn(messages[lastUserIdx].parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join(" "))
+          : undefined;
+        if (transcript.length > 40 || userUrl) {
+          setRecovering((s) => ({ ...s, [last.id]: true }));
+          fetch("/api/format-products", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: transcript, url: userUrl }),
+          })
+            .then((r) => r.json())
+            .then((d) => {
+              if (Array.isArray(d.items) && d.items.length > 0) {
+                setRecovered((s) => ({ ...s, [last.id]: JSON.stringify(d.items) }));
+              }
+            })
+            .catch(() => {})
+            .finally(() => setRecovering((s) => { const n = { ...s }; delete n[last.id]; return n; }));
+        }
+      }
+
+      // Persist the transcript to chat history (best-effort, fire-and-forget).
+      saveTranscript(messages);
+
       // Agent just finished -- fetch contextual suggestions
       const lastTexts = messages
         .filter((m) => m.role === "assistant")
@@ -814,34 +1066,10 @@ export default function AgentPage(props: AgentPageProps) {
         .then((d) => setSuggestions(d.suggestions ?? []))
         .catch(() => setSuggestions([]));
 
-      // Auto-open artifact panel when agent finishes with formatted output
-      const hasOutput = messages.some((m) =>
-        m.role === "assistant" && m.parts.some((p) => {
-          const pp = p as Record<string, unknown>;
-          const tn = (pp.toolName ?? (p.type as string).replace("tool-", "")) as string;
-          return tn === "formatOutput" && (pp.state === "output-available" || pp.state === "result") && pp.output;
-        })
-      );
-      if (hasOutput) setArtifactOpen(true);
+      // Products now show inline — no auto-open of artifact panel
     }
     prevIsRunning.current = isRunning;
   }, [isRunning, messages, config.prompt]);
-
-  // Auto-open artifact panel as soon as formatOutput appears (even while streaming)
-  const prevHadArtifact = useRef(false);
-  useEffect(() => {
-    const hasFormatOutput = messages.some((m) =>
-      m.role === "assistant" && m.parts.some((p) => {
-        const pp = p as Record<string, unknown>;
-        const tn = (pp.toolName ?? (p.type as string).replace("tool-", "")) as string;
-        return tn === "formatOutput";
-      })
-    );
-    if (hasFormatOutput && !prevHadArtifact.current) {
-      setArtifactOpen(true);
-    }
-    prevHadArtifact.current = hasFormatOutput;
-  }, [messages]);
 
   const handleGenerateDoc = async (kind: "skill" | "workflow") => {
     if (!docName.trim() || generatingDoc) return;
@@ -959,32 +1187,91 @@ export default function AgentPage(props: AgentPageProps) {
   const currentModelName = currentModel?.name ?? config.model.model;
   const currentModelIcon = currentModel?.icon ?? "openai";
 
-  // First screen: clean input bar like Google/Lovable
+  // First screen: editorial landing — display headline, refined input, suggestion list
   if (!hasSubmitted) {
     return (
-      <div className="min-h-screen bg-background-base flex flex-col items-center px-16 relative">
-        <div className="absolute top-12 right-20">
-          <HeaderLinks />
-        </div>
-        <div className="flex flex-col items-center gap-12 mb-32 mt-[min(18vh,160px)]">
-          <SymbolColored width={56} height={80} />
-          <span className="text-title-h3 text-accent-black font-semibold">ShopSmart</span>
-        </div>
-
-        {/* Input card */}
+      <div className="min-h-[100dvh] bg-background-base relative overflow-hidden flex flex-col">
+        <HistoryPanel
+          open={historyOpen}
+          onClose={() => setHistoryOpen(false)}
+          conversations={conversations}
+          activeId={conversationId}
+          configured={historyConfigured}
+          onSelect={loadConversation}
+          onNew={newChat}
+          onDelete={deleteConversation}
+        />
+        {/* Ambient heat-glow flourishes */}
         <div
-          className="w-full max-w-640 relative bg-accent-white rounded-16 overflow-visible"
+          aria-hidden
+          className="pointer-events-none absolute -top-[300px] left-1/2 -translate-x-1/2 w-[820px] h-[620px] rounded-full"
           style={{
-            boxShadow:
-              "0px 4px 32px -4px rgba(0, 0, 0, 0.08), 0px 2px 12px -2px rgba(0, 0, 0, 0.04), 0px 0px 0px 1px rgba(0, 0, 0, 0.06)",
+            background:
+              "radial-gradient(closest-side, rgba(15,161,92,0.12), rgba(15,161,92,0))",
           }}
-        >
+        />
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -bottom-[240px] -left-[160px] w-[560px] h-[560px] rounded-full"
+          style={{
+            background:
+              "radial-gradient(closest-side, rgba(15,161,92,0.07), rgba(15,161,92,0))",
+          }}
+        />
+
+        {/* Top bar */}
+        <header className="relative flex items-center justify-between px-24 sm:px-40 py-20">
+          <div className="flex items-center gap-14">
+            <div className="flex items-center gap-10">
+              <SymbolColored width={22} height={32} />
+              <span className="text-label-medium text-accent-black tracking-tight">ShopSmart</span>
+            </div>
+            <HistoryButton onClick={() => setHistoryOpen(true)} />
+            <NewChatButton onClick={newChat} />
+          </div>
+          <HeaderLinks />
+        </header>
+
+        {/* Content well — centered, input-first hero */}
+        <main className="relative z-1 flex-1 mx-auto w-full max-w-[720px] px-24 flex flex-col items-center justify-center text-center pb-24">
+          {/* Brand lockup */}
+          <div className="flex items-center justify-center gap-12 mb-14">
+            <SymbolColored width={28} height={40} />
+            <span
+              className="text-accent-black tracking-tight"
+              style={{ fontSize: "clamp(36px, 5.5vw, 56px)", fontWeight: 500, letterSpacing: "-0.03em", lineHeight: 1 }}
+            >
+              ShopSmart
+            </span>
+            <svg fill="none" viewBox="0 0 24 24" width="26" height="26" className="text-heat-100" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 5a3 3 0 1 0-5.997.125 4 4 0 0 0-2.526 5.77 4 4 0 0 0 .556 6.588A4 4 0 1 0 12 18Z" />
+              <path d="M12 5a3 3 0 1 1 5.997.125 4 4 0 0 1 2.526 5.77 4 4 0 0 1-.556 6.588A4 4 0 1 1 12 18Z" />
+              <path d="M15 13a4.5 4.5 0 0 1-3-4 4.5 4.5 0 0 1-3 4" />
+              <path d="M17.599 6.5a3 3 0 0 0 .399-1.375" />
+              <path d="M6.003 5.125A3 3 0 0 0 6.401 6.5" />
+              <path d="M3.477 10.896a4 4 0 0 1 .585-.396" />
+              <path d="M19.938 10.5a4 4 0 0 1 .585.396" />
+              <path d="M6 18a4 4 0 0 1-1.967-.516" />
+              <path d="M19.967 17.484A4 4 0 0 1 18 18" />
+            </svg>
+          </div>
+
+          {/* Tagline */}
+          <p className="mb-32 text-body-large text-black-alpha-40">
+            Your AI shopping agent for India
+          </p>
+
+          {/* Input card — the hero element */}
+          <div
+            className="w-full relative bg-accent-white rounded-16 border border-border-muted overflow-visible text-left transition-all duration-300 focus-within:border-heat-40 focus-within:shadow-[0_16px_44px_-14px_rgba(15,161,92,0.24)]"
+            style={{ boxShadow: "0 1px 2px rgba(0,0,0,0.03)" }}
+          >
           {/* Text area */}
           <div className="px-20 pt-16 pb-8 relative">
             <textarea
               ref={textareaRef}
               className="w-full bg-transparent text-body-large text-accent-black placeholder:text-black-alpha-32 focus:outline-none resize-none"
-              placeholder={typingPlaceholder || "What do you want to shop for?"}
+              placeholder={voiceState === "recording" ? "Listening…" : voiceState === "busy" ? "Transcribing…" : (typingPlaceholder || "What do you want to shop for?")}
               rows={2}
               autoFocus
               value={config.prompt}
@@ -1080,7 +1367,7 @@ export default function AgentPage(props: AgentPageProps) {
                       ? "text-heat-100 hover:bg-heat-8"
                       : "text-black-alpha-32 hover:bg-black-alpha-4 hover:text-black-alpha-48",
                   )}
-                  onClick={() => { setShowPlus(!showPlus); setShowModel(false); }}
+                  onClick={() => setShowPlus(!showPlus)}
                 >
                   <svg fill="none" height="18" viewBox="0 0 24 24" width="18" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
                     <path d="M12 5v14M5 12h14" />
@@ -1140,29 +1427,18 @@ export default function AgentPage(props: AgentPageProps) {
               )}
             </div>
 
-            {/* Model + Plan + Submit */}
+            {/* Mic + Submit */}
             <div className="flex items-center gap-4">
-              {/* Model button */}
-              <div className="relative">
-                <button
-                  type="button"
-                  className="flex items-center gap-6 px-8 py-5 rounded-8 text-label-small text-black-alpha-40 hover:bg-black-alpha-4 transition-all"
-                  onClick={() => { setShowModel(!showModel); setShowPlus(false); }}
-                >
-                  <ProviderModelIcon icon={currentModelIcon} size={14} />
-                  <span>{currentModelName}</span>
-                </button>
-                {showModel && (
-                  <ModelDropdown
-                    value={config.model}
-                    onChange={(model) => setConfig({ ...config, model })}
-                    onClose={() => setShowModel(false)}
-                    acpAgents={acpAgents}
-                    configuredProviders={configuredProviders}
-                  />
-                )}
-              </div>
-
+              <MicButton
+                size={32}
+                onState={setVoiceState}
+                onTranscript={(text) => {
+                  if (!text.trim()) return;
+                  setConfig((c) => ({ ...c, prompt: text }));
+                  setHasSubmitted(true);
+                  sendMessage({ text });
+                }}
+              />
               <button
                 type="button"
                 className={cn(
@@ -1171,7 +1447,7 @@ export default function AgentPage(props: AgentPageProps) {
                     ? "bg-heat-100 hover:bg-[color:var(--heat-90)] text-accent-white active:scale-95"
                     : "bg-black-alpha-8 text-black-alpha-24 cursor-not-allowed",
                 )}
-                disabled={!config.prompt.trim()}
+                disabled={config.prompt.trim().length === 0}
                 onClick={onRun}
               >
                 <svg fill="none" height="18" viewBox="0 0 20 20" width="18">
@@ -1188,34 +1464,59 @@ export default function AgentPage(props: AgentPageProps) {
           </div>
         </div>
 
-        {/* Example prompts */}
-        <div className="w-full max-w-640 mt-20">
-          <div className="grid grid-cols-2 gap-8">
+          {/* Suggestion chips — a few neat, uniform examples */}
+          <div className="mt-24 flex flex-wrap items-center justify-center gap-8">
             {[
-              "Get the P/E ratio, stock price, and latest press release for NVIDIA, Google, and Microsoft",
-              "Go to https://www-cdn.anthropic.com/08ab9158070959f88f296514c21b7facce6f52bc.pdf — what are the benchmarks for Claude Mythos?",
-              "Compare Cursor, Windsurf, and Claude Code: pricing, features, and supported languages from each site",
-              "Find the 5 most recent YC-backed AI startups on ycombinator.com/companies and get each founder's LinkedIn",
-            ].map((prompt) => (
+              {
+                label: "Earbuds under ₹2,000",
+                text: "Find noise-cancelling earbuds under ₹2,000 across Amazon.in, Flipkart and the official brand stores",
+                icon: <path d="M3 14v-1a9 9 0 0 1 18 0v1M21 17a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2zM3 17a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z" />,
+              },
+              {
+                label: "Student laptop deals",
+                text: "Compare student laptop prices and student discounts on Amazon.in, Flipkart, Croma and brand stores",
+                icon: <><rect x="3" y="4" width="18" height="12" rx="1" /><path d="M2 20h20" /></>,
+              },
+              {
+                label: "Fashion coupons",
+                text: "Find active coupon codes for Myntra and Ajio fashion sales",
+                icon: <><path d="M20 12a2 2 0 0 1 0-4V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v2a2 2 0 0 1 0 4v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2z" /><path d="M15 9l-6 6" /></>,
+              },
+            ].map((item) => (
               <button
-                key={prompt}
+                key={item.label}
                 type="button"
-                className="text-left px-14 py-10 border border-border-faint bg-accent-white hover:border-heat-40 hover:bg-heat-4 transition-all group"
+                className="group inline-flex items-center gap-7 pl-11 pr-14 py-8 rounded-full bg-accent-white border border-border-faint text-body-small text-black-alpha-56 hover:text-accent-black hover:border-heat-40 hover:bg-heat-4 transition-all active:scale-[0.98]"
                 onClick={() => {
-                  const updated = { ...config, prompt };
-                  setConfig(updated);
+                  setConfig({ ...config, prompt: item.text });
                   setHasSubmitted(true);
-                  sendMessage({ text: prompt });
+                  sendMessage({ text: item.text });
                 }}
               >
-                <span className="text-body-medium text-black-alpha-48 group-hover:text-accent-black transition-colors line-clamp-2">
-                  {prompt}
-                </span>
+                <svg fill="none" height="14" viewBox="0 0 24 24" width="14" className="text-black-alpha-32 group-hover:text-heat-100 transition-colors flex-shrink-0" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+                  {item.icon}
+                </svg>
+                {item.label}
               </button>
             ))}
           </div>
-        </div>
+        </main>
 
+        {/* Footer */}
+        <footer className="relative z-1 px-24 sm:px-40 py-18 flex items-center justify-between text-mono-x-small text-black-alpha-32">
+          <span>ShopSmart · {new Date().getFullYear()}</span>
+          <span className="tabular-nums">
+            Powered by{" "}
+            <a
+              href="https://app.rankup.diy"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-black-alpha-48 hover:text-heat-100 transition-colors"
+            >
+              RankUp
+            </a>
+          </span>
+        </footer>
       </div>
     );
   }
@@ -1223,6 +1524,16 @@ export default function AgentPage(props: AgentPageProps) {
   // After submission: centered activity feed
   return (
     <div className="h-screen bg-background-base flex flex-col">
+      <HistoryPanel
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        conversations={conversations}
+        activeId={conversationId}
+        configured={historyConfigured}
+        onSelect={loadConversation}
+        onNew={newChat}
+        onDelete={deleteConversation}
+      />
       <header className="border-b border-border-faint px-20 py-12 flex items-center gap-10 flex-shrink-0">
         <button
           type="button"
@@ -1240,18 +1551,11 @@ export default function AgentPage(props: AgentPageProps) {
           }}
         >
           <SymbolColored width={22} height={32} />
-          <span className="text-label-large text-accent-black font-semibold">ShopSmart</span>
+          <span className="text-label-large text-accent-black tracking-tight">ShopSmart</span>
         </button>
+        <HistoryButton onClick={() => setHistoryOpen(true)} />
+        <NewChatButton onClick={newChat} />
         <div className="ml-auto flex items-center gap-6">
-          {isRunning && (
-            <button
-              type="button"
-              className="px-12 py-6 rounded-8 text-label-small bg-black-alpha-4 text-accent-black hover:bg-black-alpha-8 transition-all"
-              onClick={stop}
-            >
-              Stop
-            </button>
-          )}
           <SettingsPanel config={config} onChange={setConfig} />
           <HeaderLinks />
         </div>
@@ -1259,14 +1563,7 @@ export default function AgentPage(props: AgentPageProps) {
 
       <div className="flex flex-1 overflow-hidden">
       <div ref={scrollRef} className="flex-1 overflow-y-auto no-scrollbar">
-      <div className={cn("mx-auto px-20 py-24 transition-all duration-200", !artifactOpen ? "max-w-900" : "max-w-700")}>
-        {/* Query display */}
-        <div className="mb-20">
-          <div className="text-title-h4 text-accent-black">
-            {config.prompt}
-          </div>
-        </div>
-
+      <div className={cn("mx-auto px-20 py-24 transition-all duration-200 flex flex-col min-h-full", !artifactOpen ? "max-w-900" : "max-w-700")}>
         {/* Firecrawl Spark results */}
         {sparkMode ? (
           <div className="mt-8">
@@ -1361,32 +1658,287 @@ export default function AgentPage(props: AgentPageProps) {
           </div>
         ) : (
           <>
-        {/* Activity feed */}
-        <PlanVisualization messages={messages} isRunning={isRunning} preloadedSkills={config.skills.length > 0 ? config.skills : undefined} onArtifactClick={() => setArtifactOpen(true)} />
+        {/* Restoring a saved chat */}
+        {restoring && messages.length === 0 && (
+          <div className="flex items-center justify-center gap-10 py-60 text-body-small text-black-alpha-48">
+            <span className="w-16 h-16 border-2 border-black-alpha-16 border-t-heat-100 rounded-full animate-spin" />
+            Restoring your chat…
+          </div>
+        )}
 
-        {/* Bottom section */}
-        {messages.length > 0 && (
-          <div className="mt-20 pt-16">
-            {/* Error display */}
-            {chatError && (
-              <div className="mb-10 px-14 py-10 border border-accent-crimson/20 bg-accent-crimson/5 text-body-small text-accent-black">
-                <span className="text-accent-crimson text-label-small">Error: </span>
-                {(() => {
-                  const msg = chatError.message || "Something went wrong";
-                  try { const parsed = JSON.parse(msg); return parsed.error ?? msg; } catch { return msg; }
-                })()}
-              </div>
-            )}
-
-            {/* Follow-up input */}
-            {!isRunning && (
+        {/* Conversation feed — user/assistant turns in order */}
+        {messages.map((msg, msgIdx) => {
+          if (msg.role === "user") {
+            const text = msg.parts
+              .filter((p) => p.type === "text")
+              .map((p) => (p as { text: string }).text)
+              .join("\n")
+              .trim();
+            if (!text) return null;
+            return (
               <div
-                className="bg-accent-white border border-border-faint overflow-hidden transition-opacity"
+                key={msg.id}
+                className={cn("flex justify-end", msgIdx === 0 ? "mb-24" : "mt-32 mb-24")}
+              >
+                <div
+                  className="max-w-[78%] rounded-[18px] rounded-tr-[6px] px-18 py-12 text-body-medium text-accent-black whitespace-pre-wrap break-words text-pretty"
+                  style={{
+                    background: "linear-gradient(180deg, rgba(15,161,92,0.06), rgba(15,161,92,0.03))",
+                    boxShadow: "inset 0 0 0 1px rgba(15,161,92,0.18)",
+                  }}
+                >
+                  {text}
+                </div>
+              </div>
+            );
+          }
+
+          // Assistant turn: text + (if this message contained formatOutput) product cards.
+          // Only the final assistant message of a turn shows its text; earlier
+          // narration messages are hidden (their cards, if any, still render).
+          const showText = finalAssistantIds.has(msg.id);
+          const textParts = showText
+            ? msg.parts.filter(
+                (part) => part.type === "text" && (part as { text?: string }).text?.trim(),
+              )
+            : [];
+          // Primary: structured output from formatOutput.
+          // Fallback: parse the assistant's prose for product blocks (the LLM
+          // sometimes forgets the contract and answers with a numbered list).
+          let formatted = extractMessageFormatted(msg);
+          if (!formatted) formatted = synthesizeFallbackProducts(msg);
+          const showCards =
+            formatted &&
+            !formatted.streaming &&
+            formatted.format === "json" &&
+            isProductData(formatted.content);
+
+          if (textParts.length === 0 && !showCards && !recovered[msg.id] && !recovering[msg.id]) return null;
+
+          return (
+            <div key={msg.id} className="flex items-start gap-14 mb-28">
+              <div className="flex-shrink-0 pt-4">
+                <SymbolColored width={22} height={32} />
+              </div>
+              <div className="flex-1 min-w-0">
+                {textParts.map((part, i) => (
+                  <div
+                    key={i}
+                    className="text-body-medium text-accent-black/88 text-pretty max-w-[68ch] leading-[1.75] [&_p]:my-12 [&_p]:leading-[1.75] [&_ul]:my-12 [&_ol]:my-12 [&_li]:my-6 [&_li]:leading-[1.7] [&_h1]:mt-20 [&_h1]:mb-8 [&_h2]:mt-18 [&_h2]:mb-8 [&_h3]:mt-16 [&_h3]:mb-6 [&_strong]:text-accent-black [&_strong]:font-medium [&_a]:text-heat-100 [&_a:hover]:underline tabular-nums"
+                  >
+                    <StreamdownBlock>{(part as { text: string }).text}</StreamdownBlock>
+                  </div>
+                ))}
+                {showCards && (
+                  <div className="mt-20">
+                    <ProductCards
+                      data={formatted!.content}
+                      onViewJson={() => setArtifactOpen(true)}
+                      onSelect={buyProduct}
+                    />
+                  </div>
+                )}
+                {/* Deterministic recovery cards (when the agent didn't format) */}
+                {!showCards && recovered[msg.id] && (
+                  <div className="mt-20">
+                    <ProductCards
+                      data={recovered[msg.id]}
+                      onViewJson={() => setArtifactOpen(true)}
+                      onSelect={buyProduct}
+                    />
+                  </div>
+                )}
+                {!showCards && !recovered[msg.id] && recovering[msg.id] && (
+                  <div className="mt-16 flex items-center gap-10 text-body-small text-black-alpha-48">
+                    <span className="w-14 h-14 border-2 border-black-alpha-16 border-t-heat-100 rounded-full animate-spin" />
+                    Formatting results…
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Live browser — watch the agent navigate / check out in real time */}
+        {isRunning && liveViews.length > 0 && (() => {
+          const lv = liveViews[liveViews.length - 1];
+          const src = lv.interactiveLiveViewUrl ?? lv.liveViewUrl;
+          let host = "live browser";
+          try { if (lv.url) host = new URL(lv.url).hostname.replace(/^www\./, ""); } catch { /* keep default */ }
+          return (
+            <div className="mb-28 rounded-14 overflow-hidden border border-border-faint bg-black-alpha-2">
+              <div className="flex items-center gap-8 px-12 py-8 border-b border-border-faint">
+                <span className="relative flex h-7 w-7 flex-shrink-0">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-heat-100 opacity-60" />
+                  <span className="relative inline-flex h-7 w-7 rounded-full bg-heat-100" />
+                </span>
+                <span className="text-mono-x-small uppercase tracking-wider text-heat-100">Live</span>
+                <span className="text-mono-x-small text-black-alpha-48 truncate">{host}</span>
+              </div>
+              <iframe
+                src={src}
+                title="Agent live browser"
+                className="w-full aspect-[16/10] bg-white"
+                sandbox="allow-scripts allow-same-origin allow-forms"
+                referrerPolicy="no-referrer"
+              />
+            </div>
+          );
+        })()}
+
+        {/* Activity log — appears under the most recent user prompt while running */}
+        {isRunning && (() => {
+          type Activity = { tool: string; label: string; detail: string | null };
+          const activities: Activity[] = [];
+          const seen = new Set<string>();
+
+          const trim = (s: string, n = 70) =>
+            s.length > n ? s.slice(0, n - 1) + "…" : s;
+          const hostOf = (u: string) => {
+            try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; }
+          };
+
+          const verbMap: Record<string, string> = {
+            search: "Searching",
+            scrape: "Reading",
+            interact: "Navigating",
+            map: "Mapping",
+            crawl: "Crawling",
+            formatOutput: "Formatting results",
+            spawnAgents: "Comparing across stores",
+            bashExec: "Processing data",
+          };
+
+          // Only look at tool calls in the LATEST assistant message — that's
+          // the in-progress turn. Otherwise old activities pile up on follow-ups.
+          let latestAssistant: typeof messages[number] | null = null;
+          for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === "assistant") { latestAssistant = messages[i]; break; }
+          }
+
+          if (latestAssistant) {
+            for (const part of latestAssistant.parts) {
+              if (!isToolPart(part)) continue;
+              const p = part as Record<string, unknown>;
+              const toolName = (p.toolName ?? (part.type as string).replace("tool-", "")) as string;
+              const input = (p.input ?? p.args ?? {}) as Record<string, unknown>;
+              const callId = String(p.toolCallId ?? p.id ?? `${toolName}-${activities.length}`);
+
+              let detail: string | null = null;
+              if (toolName === "search") {
+                // The server rewrites stale years before searching; mirror that
+                // in the display so the progress doesn't show "2024".
+                const fixYear = (q: string) => q.replace(/\b20\d{2}\b/g, (m) => (parseInt(m, 10) < new Date().getFullYear() ? String(new Date().getFullYear()) : m));
+                detail = typeof input.query === "string" ? trim(fixYear(input.query)) : null;
+              } else if (toolName === "scrape" || toolName === "map" || toolName === "crawl") {
+                const url = typeof input.url === "string" ? input.url
+                  : Array.isArray(input.urls) && typeof input.urls[0] === "string" ? input.urls[0] as string
+                  : null;
+                detail = url ? hostOf(url) : null;
+              } else if (toolName === "interact") {
+                const url = typeof input.url === "string" ? input.url : null;
+                const action = typeof input.action === "string" ? input.action
+                  : Array.isArray(input.actions) && input.actions[0] && typeof (input.actions[0] as { type?: string }).type === "string"
+                    ? (input.actions[0] as { type: string }).type
+                    : null;
+                detail = [url ? hostOf(url) : null, action].filter(Boolean).join(" · ") || null;
+              } else if (toolName === "bashExec") {
+                detail = typeof input.command === "string" ? trim(input.command, 50) : null;
+              } else if (toolName === "spawnAgents") {
+                const count = Array.isArray(input.tasks) ? input.tasks.length : null;
+                detail = count ? `${count} parallel workers` : null;
+              }
+
+              const key = `${callId}:${toolName}`;
+              if (seen.has(key)) continue;
+              seen.add(key);
+              activities.push({
+                tool: toolName,
+                label: verbMap[toolName] ?? toolName,
+                detail,
+              });
+            }
+          }
+
+          // Minimal: a single pulsing line showing the current action — no
+          // step history, no box. It vanishes the moment the run finishes.
+          const active = activities[activities.length - 1];
+          return (
+            <div className="flex items-center gap-10 mb-28 text-body-small">
+              <span className="relative flex h-8 w-8 flex-shrink-0">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-heat-100 opacity-50" />
+                <span className="relative inline-flex h-8 w-8 rounded-full bg-heat-100" />
+              </span>
+              <span className="text-accent-black/70 font-medium">{active?.label ?? "Working"}</span>
+              {active?.detail && (
+                <span className="text-black-alpha-40 truncate font-mono text-mono-x-small">{active.detail}</span>
+              )}
+            </div>
+          );
+        })()}
+
+        {/* Session stats scoreboard */}
+        {messages.length > 0 && (
+          <div className="mt-16 mb-2">
+            <div className="flex items-center justify-end gap-x-12 gap-y-4 flex-wrap">
+              <div className="flex items-center gap-4 text-mono-x-small text-black-alpha-32">
+                <ProviderModelIcon icon={currentModelIcon} size={12} />
+                {currentModelName}
+              </div>
+              {sessionStats.fc.total > 0 && (
+                <>
+                  <div className="flex items-center gap-4 text-mono-x-small text-black-alpha-32">
+                    🔥 {sessionStats.fc.total} credits
+                  </div>
+                  <div className="flex items-center gap-x-8 text-mono-x-small text-black-alpha-24">
+                    {(["search", "scrape", "map", "crawl", "interact"] as const).map((tool) => {
+                      const b = sessionStats.fc[tool];
+                      if (b.credits === 0) return null;
+                      return (
+                        <span key={tool}>
+                          {tool}: {b.credits}
+                        </span>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* Sticky composer pinned to the bottom (Claude/GPT style) */}
+        {messages.length > 0 && (
+          <div className="mt-auto sticky bottom-0 z-10 bg-background-base border-t border-border-faint -mx-20 px-20 pt-12 pb-8">
+            {/* Error display */}
+            {chatError && (() => {
+              const raw = chatError.message || "Something went wrong";
+              let msg: string;
+              try { msg = (JSON.parse(raw).error as string) ?? raw; } catch { msg = raw; }
+              // Hide Firecrawl's site-unsupported / enterprise-upsell message and
+              // replace it with a clean line.
+              if (
+                /We apologi[sz]e for the inconvenience|typeform\.com\/to\/Ej6oydlg|do(?:n['']?| not) support this site/i.test(msg)
+              ) {
+                msg = "That store couldn't be accessed. Try a different one — I'll search elsewhere.";
+              }
+              return (
+                <div className="mb-10 px-14 py-10 border border-accent-crimson/20 bg-accent-crimson/5 text-body-small text-accent-black">
+                  <span className="text-accent-crimson text-label-small">Error: </span>
+                  {msg}
+                </div>
+              );
+            })()}
+
+            {/* Composer — always visible, even while the agent is working */}
+            {(
+              <div
+                className="bg-accent-white border border-border-faint rounded-12 overflow-hidden transition-all focus-within:border-heat-40"
               >
                 <div className="flex items-center gap-8 px-16 py-12 relative">
                   <input
                     className="flex-1 bg-transparent text-body-medium text-accent-black placeholder:text-black-alpha-32 focus:outline-none"
-                    placeholder="Ask another question..."
+                    placeholder={voiceState === "recording" ? "Listening…" : voiceState === "busy" ? "Transcribing…" : isRunning ? "Agent is working — press stop to interrupt" : "Ask another question..."}
                     value={followUp}
                     onChange={(e) => {
                       const val = e.target.value;
@@ -1415,7 +1967,7 @@ export default function AgentPage(props: AgentPageProps) {
                           return;
                         }
                       }
-                      if (e.key === "Enter" && followUp.trim() && followUpMentionQuery === null) {
+                      if (e.key === "Enter" && !isRunning && followUp.trim() && followUpMentionQuery === null) {
                         e.preventDefault();
                         setSuggestions([]);
                         sendMessage({ text: followUp });
@@ -1451,10 +2003,33 @@ export default function AgentPage(props: AgentPageProps) {
                       ))}
                     </div>
                   )}
-                  {followUp.trim() && (
+                  {!isRunning && (
+                    <MicButton
+                      size={30}
+                      onState={setVoiceState}
+                      onTranscript={(text) => {
+                        if (!text.trim()) return;
+                        setSuggestions([]);
+                        setFollowUp("");
+                        sendMessage({ text });
+                      }}
+                    />
+                  )}
+                  {isRunning ? (
                     <button
                       type="button"
-                      className="bg-heat-100 hover:bg-[color:var(--heat-90)] text-accent-white p-6 transition-all active:scale-95"
+                      aria-label="Stop"
+                      className="flex-shrink-0 bg-black-alpha-8 hover:bg-black-alpha-12 text-accent-black p-7 rounded-8 transition-all active:scale-95"
+                      onClick={stop}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 20 20" fill="currentColor">
+                        <rect x="5" y="5" width="10" height="10" rx="2" />
+                      </svg>
+                    </button>
+                  ) : followUp.trim() ? (
+                    <button
+                      type="button"
+                      className="flex-shrink-0 bg-heat-100 hover:bg-[color:var(--heat-90)] text-accent-white p-7 rounded-8 transition-all active:scale-95"
                       onClick={() => {
                         setSuggestions([]);
                         sendMessage({ text: followUp });
@@ -1471,7 +2046,7 @@ export default function AgentPage(props: AgentPageProps) {
                         />
                       </svg>
                     </button>
-                  )}
+                  ) : null}
                 </div>
               </div>
             )}
@@ -1501,35 +2076,6 @@ export default function AgentPage(props: AgentPageProps) {
           </>
         )}
 
-        {/* Session stats scoreboard */}
-        {messages.length > 0 && (
-          <div className="mt-16 mb-8">
-            <div className="flex items-center justify-end gap-x-12 gap-y-4 flex-wrap">
-              <div className="flex items-center gap-4 text-mono-x-small text-black-alpha-32">
-                <ProviderModelIcon icon={currentModelIcon} size={12} />
-                {currentModelName}
-              </div>
-              {sessionStats.fc.total > 0 && (
-                <>
-                  <div className="flex items-center gap-4 text-mono-x-small text-black-alpha-32">
-                    🔥 {sessionStats.fc.total} credits
-                  </div>
-                  <div className="flex items-center gap-x-8 text-mono-x-small text-black-alpha-24">
-                    {(["search", "scrape", "map", "crawl", "interact"] as const).map((tool) => {
-                      const b = sessionStats.fc[tool];
-                      if (b.credits === 0) return null;
-                      return (
-                        <span key={tool}>
-                          {tool}: {b.credits}
-                        </span>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        )}
       </div>
       </div>
 
