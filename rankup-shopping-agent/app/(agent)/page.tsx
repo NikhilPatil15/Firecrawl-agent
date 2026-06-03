@@ -171,7 +171,7 @@ const defaultConfig: AgentConfig = {
   urls: [],
   schema: undefined,
   model: defaultModel,
-  skills: ["web-shopping", "e-commerce"],
+  skills: ["e-commerce"],
   subAgents: [],
   // Tight enough to stay fast, with headroom for checkout flows (several
   // interact steps). The speed_policy keeps most search/compare runs well under.
@@ -1326,11 +1326,6 @@ export default function AgentPage(props: AgentPageProps) {
       .slice(0, 6);
   }, [followUpMentionQuery, skills]);
 
-  const currentModel = AVAILABLE_MODELS[config.model.provider]?.find(
-    (m) => m.id === config.model.model,
-  );
-  const currentModelName = currentModel?.name ?? config.model.model;
-  const currentModelIcon = currentModel?.icon ?? "openai";
 
   // First screen: editorial landing — display headline, refined input, suggestion list
   if (!hasSubmitted) {
@@ -1954,9 +1949,9 @@ export default function AgentPage(props: AgentPageProps) {
         {messages.length > 0 && (
           <div className="mt-16 mb-2">
             <div className="flex items-center justify-end gap-x-12 gap-y-4 flex-wrap">
-              <div className="flex items-center gap-4 text-mono-x-small text-black-alpha-32">
-                <ProviderModelIcon icon={currentModelIcon} size={12} />
-                {currentModelName}
+              <div className="flex items-center gap-5 text-mono-x-small text-black-alpha-32">
+                <span className="w-5 h-5 rounded-full bg-heat-100" />
+                Curated by ShopSmart AI
               </div>
               {sessionStats.fc.total > 0 && (
                 <>
