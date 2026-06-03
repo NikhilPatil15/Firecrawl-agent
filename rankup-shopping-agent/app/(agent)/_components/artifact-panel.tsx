@@ -359,7 +359,7 @@ function SkillPanel({ messages, prompt, schema, onClose }: SkillPanelProps) {
   }, [content]);
 
   return (
-    <div className="h-full border-l border-border-faint bg-accent-white flex flex-col flex-shrink-0 w-full md:w-[50%] transition-all duration-200 overflow-hidden">
+    <div className="fixed inset-0 z-50 w-full md:static md:inset-auto md:z-auto md:w-[50%] h-full border-l border-border-faint bg-accent-white flex flex-col flex-shrink-0 transition-all duration-200 overflow-hidden">
       {/* Header */}
       <div className="px-14 py-10 border-b border-border-faint flex items-center gap-8">
         <span className="text-label-medium text-accent-black">Save as Skill</span>
@@ -547,7 +547,7 @@ export default function ArtifactPanel({ messages, isRunning, onRequestFormat, on
   const hasProducts = isJson && !isStreaming && isProductData(formatted.content);
 
   return (
-    <div className="h-full border-l border-border-faint bg-accent-white flex flex-col flex-shrink-0 w-full md:w-[50%] transition-all duration-200 overflow-hidden">
+    <div className="fixed inset-0 z-50 w-full md:static md:inset-auto md:z-auto md:w-[50%] h-full border-l border-border-faint bg-accent-white flex flex-col flex-shrink-0 transition-all duration-200 overflow-hidden">
       {/* Header */}
       <div className="px-14 py-10 border-b border-border-faint flex items-center gap-8">
         {isStreaming ? (

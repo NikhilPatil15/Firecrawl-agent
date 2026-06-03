@@ -91,12 +91,17 @@ export async function POST(req: Request) {
       model: anthropic("claude-haiku-4-5-20251001"),
       schema: z.object({ items: z.array(Item) }),
       prompt:
-        "Extract EVERY distinct product (or coupon) from the content below into the JSON. Prefer the STORE CATALOG section when present — it is the source of truth and contains image URLs. " +
-        "Rules: currency is always \"INR\"; price/originalPrice are plain numbers (strip ₹/Rs and commas); set bestPick true on exactly ONE best item and false on the rest. " +
-        "imageUrl MUST be the product's absolute image URL when the catalog shows one (e.g. an .../web/image/... or https image link). " +
-        "sourceUrl is the product's own page URL. For variant-priced products set price to the lowest/base variant and put the range in description. " +
-        "If the content includes review text or a rating, set sentiment (positive/mixed/negative) and a one-line reviewSummary of what buyers say; otherwise leave both null. " +
-        "Only use null when truly no value exists. Do NOT invent products. If there are none, return an empty items array.\n\n" +
+        "Extract products into the JSON. Decide the product LIST as follows: " +
+        "If a STORE CATALOG section is present, it is the source of truth — extract every product it lists (this is a store-catalog/checkout case). " +
+        "Otherwise, the ASSISTANT SUMMARY lists EXACTLY the products to show — extract every product the assistant recommended there, and do NOT add any product it didn't mention. The count of items you return must match the products named in the summary. " +
+        "Then, for EACH product, fill its fields using the SUPPORTING SCRAPE/SEARCH DATA and CATALOG: " +
+        "currency is always \"INR\"; price/originalPrice are plain numbers (strip ₹/Rs and commas); " +
+        "sourceUrl MUST be the product's own page URL (e.g. an amazon.in/dp/... or flipkart product link) found in the supporting data — never a search or homepage URL, never null if any link for that product appears anywhere in the content; " +
+        "imageUrl MUST be the product's absolute image URL when shown (e.g. an .../web/image/... or https image link); " +
+        "set sentiment (positive/mixed/negative) and a one-line reviewSummary of what buyers say whenever any review text or rating appears for that product; " +
+        "set bestPick true on exactly ONE best item and false on the rest. " +
+        "For variant-priced products set price to the lowest/base variant and put the range in description. " +
+        "Only use null when the value truly does not exist anywhere in the content. Do NOT invent products. If there are none, return an empty items array.\n\n" +
         source,
     });
     return Response.json({ items: object.items ?? [] });

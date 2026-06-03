@@ -101,6 +101,20 @@
   animation: best-pick-breathe 4.2s ease-in-out infinite;
 }
 
+/* ─── Agent activity loader: Claude-style sunburst spinner ─── */
+@keyframes loader-spin { to { transform: rotate(360deg); } }
+@keyframes loader-breathe {
+  0%, 100% { transform: scale(0.9); }
+  50%      { transform: scale(1.06); }
+}
+@keyframes loader-glow {
+  0%, 100% { filter: drop-shadow(0 0 4px rgba(15, 161, 92, 0.45)); }
+  50%      { filter: drop-shadow(0 0 10px rgba(15, 161, 92, 0.8)); }
+}
+.loader-spin    { animation: loader-spin 0.95s linear infinite; transform-origin: 14px 14px; }
+.loader-breathe { animation: loader-breathe 2s ease-in-out infinite; transform-origin: center; }
+.loader-glow    { animation: loader-glow 2s ease-in-out infinite; }
+
 @media (prefers-reduced-motion: reduce) {
   .animate-card-rise {
     animation: none;
@@ -108,6 +122,11 @@
   .best-pick-breathe {
     animation: none !important;
     opacity: 0.6 !important;
+  }
+  .loader-spin,
+  .loader-breathe,
+  .loader-glow {
+    animation: none !important;
   }
 }
 

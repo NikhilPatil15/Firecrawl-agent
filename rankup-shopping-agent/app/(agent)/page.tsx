@@ -171,7 +171,7 @@ const defaultConfig: AgentConfig = {
   urls: [],
   schema: undefined,
   model: defaultModel,
-  skills: [],
+  skills: ["web-shopping", "e-commerce"],
   subAgents: [],
   // Tight enough to stay fast, with headroom for checkout flows (several
   // interact steps). The speed_policy keeps most search/compare runs well under.
@@ -186,33 +186,45 @@ const PLACEHOLDER_PHRASES = [
   "Add a 65W charger to my cart and check out...",
 ];
 
-// Build a plain-text transcript of an assistant turn (final text + tool
-// outputs) to feed the deterministic /api/format-products extractor when a run
-// produced no cards on its own.
+// Build a plain-text transcript of an assistant turn to feed the deterministic
+// /api/format-products extractor. The assistant's SUMMARY text goes first and is
+// flagged as authoritative — the extractor must reproduce exactly the products
+// the assistant recommended (not raw scrape leftovers). Tool outputs follow as
+// supporting data to fill in price / link / image / reviews per product.
 function buildTurnTranscript(msgs: { parts: Array<{ type: string }> }[]): string {
-  let out = "";
+  const texts: string[] = [];
+  const toolData: string[] = [];
   for (const m of msgs) {
     for (const part of m.parts as Array<Record<string, unknown> & { type: string }>) {
       if (part.type === "text" && typeof part.text === "string") {
-        out += part.text + "\n";
+        if (part.text.trim()) texts.push(part.text.trim());
       } else if (isToolPart(part)) {
         const output = part.output ?? part.result;
         if (output != null) {
           let s = "";
           try { s = typeof output === "string" ? output : JSON.stringify(output); } catch { s = ""; }
-          if (s) out += s.slice(0, 4000) + "\n";
+          if (s) toolData.push(s.slice(0, 4000));
         }
       } else if (part.type === "data-tool-output" && part.data) {
         const output = (part.data as { output?: unknown }).output;
         if (output != null) {
           let s = "";
           try { s = typeof output === "string" ? output : JSON.stringify(output); } catch { s = ""; }
-          if (s) out += s.slice(0, 4000) + "\n";
+          if (s) toolData.push(s.slice(0, 4000));
         }
       }
     }
   }
-  return out.slice(0, 18000);
+  const summary = texts.join("\n").slice(0, 8000);
+  const tools = toolData.join("\n").slice(0, 11000);
+  let out = "";
+  if (summary.trim()) {
+    out += `=== ASSISTANT SUMMARY — extract EXACTLY these recommended products, no others ===\n${summary}\n\n`;
+  }
+  if (tools.trim()) {
+    out += `=== SUPPORTING SCRAPE/SEARCH DATA — use to fill each product's price, sourceUrl, imageUrl, rating, sentiment, reviewSummary ===\n${tools}`;
+  }
+  return out.slice(0, 20000);
 }
 
 // Persist which conversation is open so a page refresh restores it.
@@ -266,6 +278,129 @@ function useTypewriter(phrases: string[], typingSpeed = 50, pauseMs = 2000, dele
   }, [phrases, typingSpeed, pauseMs, deleteSpeed]);
 
   return display;
+}
+
+/** Morphing typewriter: types toward `target`, deleting the mismatched tail
+ *  first so the label transitions smoothly when the action changes. */
+function useTypewriterValue(target: string, speed = 34) {
+  const [display, setDisplay] = useState("");
+  useEffect(() => {
+    const id = setInterval(() => {
+      setDisplay((cur) => {
+        if (cur === target) return cur;
+        let i = 0;
+        while (i < cur.length && i < target.length && cur[i] === target[i]) i++;
+        // Delete down to the common prefix, then type the new tail.
+        return cur.length > i ? cur.slice(0, -1) : target.slice(0, cur.length + 1);
+      });
+    }, speed);
+    return () => clearInterval(id);
+  }, [target, speed]);
+  return display;
+}
+
+/** Animated activity glyph — a Claude-style sunburst spinner: twelve tapered
+ *  rays with an opacity cascade, spinning smoothly like a comet trail, with a
+ *  gentle breathe and a green glow. */
+function ActivityOrb() {
+  const rays = Array.from({ length: 12 });
+  return (
+    <span className="loader-glow relative inline-flex h-18 w-18 flex-shrink-0 items-center justify-center">
+      <svg viewBox="0 0 28 28" width="18" height="18" className="loader-breathe overflow-visible">
+        <g className="loader-spin">
+          {rays.map((_, i) => (
+            <line
+              key={i}
+              x1="14"
+              y1="4.2"
+              x2="14"
+              y2="8.8"
+              stroke="var(--heat-100)"
+              strokeWidth="2.4"
+              strokeLinecap="round"
+              transform={`rotate(${i * 30} 14 14)`}
+              opacity={0.16 + (i / (rays.length - 1)) * 0.84}
+            />
+          ))}
+        </g>
+      </svg>
+    </span>
+  );
+}
+
+type ActivityMessage = { role: string; parts: unknown[] };
+
+const ACTIVITY_PHRASES: Record<string, string[]> = {
+  search: ["Finding the best options", "Searching across stores", "Looking up prices", "Hunting for deals", "Checking availability", "Scanning for offers"],
+  scrape: ["Checking prices", "Reading product details", "Fetching the latest deals", "Gathering product info", "Looking at store listings", "Pulling up product details"],
+  interact: ["Browsing the store", "Navigating to checkout", "Adding to cart", "Filling in your details", "Proceeding to checkout", "Opening the page"],
+  map: ["Exploring the store", "Mapping out options"],
+  crawl: ["Browsing through results", "Going through listings"],
+  formatOutput: ["Putting it all together", "Getting your results ready", "Preparing your picks"],
+  spawnAgents: ["Comparing across stores", "Checking multiple stores at once", "Running price comparisons"],
+  bashExec: ["Crunching the numbers", "Processing results", "Analysing the data"],
+};
+
+/** The live "what the agent is doing right now" line — animated orb + a
+ *  typewriter label that morphs as the current tool changes. */
+function ActivityIndicator({ messages }: { messages: ActivityMessage[] }) {
+  type Activity = { label: string; detail: string | null };
+  const hostOf = (u: string) => {
+    try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; }
+  };
+  const pickPhrase = (tool: string, idx: number): string => {
+    const pool = ACTIVITY_PHRASES[tool];
+    return pool ? pool[idx % pool.length] : "Finding your best options";
+  };
+
+  const activities: Activity[] = [];
+  const seen = new Set<string>();
+
+  let latestAssistant: ActivityMessage | null = null;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "assistant") { latestAssistant = messages[i]; break; }
+  }
+
+  if (latestAssistant) {
+    for (const part of latestAssistant.parts) {
+      if (!isToolPart(part)) continue;
+      const p = part as Record<string, unknown>;
+      const toolName = (p.toolName ?? (p.type as string).replace("tool-", "")) as string;
+      const input = (p.input ?? p.args ?? {}) as Record<string, unknown>;
+      const callId = String(p.toolCallId ?? p.id ?? `${toolName}-${activities.length}`);
+
+      let detail: string | null = null;
+      if (toolName === "scrape" || toolName === "map" || toolName === "crawl") {
+        const url = typeof input.url === "string" ? input.url
+          : Array.isArray(input.urls) && typeof input.urls[0] === "string" ? input.urls[0] as string
+          : null;
+        detail = url ? hostOf(url) : null;
+      } else if (toolName === "interact") {
+        detail = typeof input.url === "string" ? hostOf(input.url) : null;
+      } else if (toolName === "spawnAgents") {
+        const count = Array.isArray(input.tasks) ? input.tasks.length : null;
+        detail = count ? `${count} stores` : null;
+      }
+
+      const key = `${callId}:${toolName}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      activities.push({ label: pickPhrase(toolName, activities.length), detail });
+    }
+  }
+
+  const active = activities[activities.length - 1];
+  const typed = useTypewriterValue(active?.label ?? "Working");
+
+  return (
+    <div className="flex items-center gap-x-12 gap-y-2 mb-28 flex-wrap">
+      <ActivityOrb />
+      <span className="text-label-large text-accent-black/75 font-medium tracking-tight">{typed}</span>
+      {active?.detail && (
+        <span className="text-black-alpha-40 truncate max-w-full font-mono text-mono-small">{active.detail}</span>
+      )}
+    </div>
+  );
 }
 
 interface SkillInfo {
@@ -369,7 +504,7 @@ function PlusMenu({
       }}
     >
       {/* Left nav */}
-      <div className="w-160 flex-shrink-0 py-8 px-6 flex flex-col gap-1 border-r border-border-faint bg-black-alpha-2">
+      <div className="w-120 sm:w-160 flex-shrink-0 py-8 px-6 flex flex-col gap-1 border-r border-border-faint bg-black-alpha-2">
         {menuItems.map((item) => (
           <button
             key={item.id}
@@ -1023,13 +1158,18 @@ export default function AgentPage(props: AgentPageProps) {
         const f = extractMessageFormatted(m) ?? synthesizeFallbackProducts(m);
         return !!f && !f.streaming && f.format === "json" && isProductData(f.content);
       });
+      const transcript = buildTurnTranscript(turnAssistants);
+      // Always normalize shopping turns through the deterministic extractor so
+      // cards match the assistant's summary and carry links + reviews — not just
+      // when the agent produced no cards. Gate to product-ish turns to avoid
+      // wasting a call on pure-research turns.
+      const looksShopping = producedCards || /₹|\bRs\.?\s?\d|\bprice\b|\binr\b/i.test(transcript);
       if (
-        turnAssistants.length > 0 && didToolWork && !producedCards &&
+        turnAssistants.length > 0 && didToolWork && looksShopping &&
         recoveredForUser.current !== lastUserId
       ) {
         recoveredForUser.current = lastUserId;
         const last = turnAssistants[turnAssistants.length - 1];
-        const transcript = buildTurnTranscript(turnAssistants);
         const userUrl = lastUserIdx >= 0
           ? firstUrlIn(messages[lastUserIdx].parts.filter((p) => p.type === "text").map((p) => (p as { text: string }).text).join(" "))
           : undefined;
@@ -1487,6 +1627,21 @@ export default function AgentPage(props: AgentPageProps) {
                 text: "Find active coupon codes for Myntra and Ajio fashion sales",
                 icon: <><path d="M20 12a2 2 0 0 1 0-4V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v2a2 2 0 0 1 0 4v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2z" /><path d="M15 9l-6 6" /></>,
               },
+              {
+                label: "Best phone under ₹20k",
+                text: "Find the best smartphone under ₹20,000 in India right now — compare Amazon.in, Flipkart and brand stores",
+                icon: <><rect x="5" y="2" width="14" height="20" rx="2" /><path d="M12 18h.01" /></>,
+              },
+              {
+                label: "Monitor under ₹10k",
+                text: "Find the best monitor under ₹10,000 in India — compare Amazon.in, Flipkart, Croma and brand sites",
+                icon: <><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></>,
+              },
+              {
+                label: "Flipkart coupon codes",
+                text: "Find the latest active Flipkart coupon codes and discount offers right now",
+                icon: <><path d="M20 12a2 2 0 0 1 0-4V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v2a2 2 0 0 1 0 4v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2z" /><path d="M15 9l-6 6M9 9h.01M15 15h.01" /></>,
+              },
             ].map((item) => (
               <button
                 key={item.label}
@@ -1734,17 +1889,11 @@ export default function AgentPage(props: AgentPageProps) {
                     <StreamdownBlock>{(part as { text: string }).text}</StreamdownBlock>
                   </div>
                 ))}
-                {showCards && (
-                  <div className="mt-20">
-                    <ProductCards
-                      data={formatted!.content}
-                      onViewJson={() => setArtifactOpen(true)}
-                      onSelect={buyProduct}
-                    />
-                  </div>
-                )}
-                {/* Deterministic recovery cards (when the agent didn't format) */}
-                {!showCards && recovered[msg.id] && (
+                {/* Card source priority: the deterministic normalizer wins (it
+                    matches the summary and carries links + reviews); the agent's
+                    own formatOutput shows immediately while normalization is in
+                    flight, then gets swapped for the normalized set. */}
+                {recovered[msg.id] ? (
                   <div className="mt-20">
                     <ProductCards
                       data={recovered[msg.id]}
@@ -1752,13 +1901,20 @@ export default function AgentPage(props: AgentPageProps) {
                       onSelect={buyProduct}
                     />
                   </div>
-                )}
-                {!showCards && !recovered[msg.id] && recovering[msg.id] && (
+                ) : showCards ? (
+                  <div className="mt-20">
+                    <ProductCards
+                      data={formatted!.content}
+                      onViewJson={() => setArtifactOpen(true)}
+                      onSelect={buyProduct}
+                    />
+                  </div>
+                ) : recovering[msg.id] ? (
                   <div className="mt-16 flex items-center gap-10 text-body-small text-black-alpha-48">
                     <span className="w-14 h-14 border-2 border-black-alpha-16 border-t-heat-100 rounded-full animate-spin" />
                     Formatting results…
                   </div>
-                )}
+                ) : null}
               </div>
             </div>
           );
@@ -1792,95 +1948,7 @@ export default function AgentPage(props: AgentPageProps) {
         })()}
 
         {/* Activity log — appears under the most recent user prompt while running */}
-        {isRunning && (() => {
-          type Activity = { tool: string; label: string; detail: string | null };
-          const activities: Activity[] = [];
-          const seen = new Set<string>();
-
-          const trim = (s: string, n = 70) =>
-            s.length > n ? s.slice(0, n - 1) + "…" : s;
-          const hostOf = (u: string) => {
-            try { return new URL(u).hostname.replace(/^www\./, ""); } catch { return u; }
-          };
-
-          const verbMap: Record<string, string> = {
-            search: "Searching",
-            scrape: "Reading",
-            interact: "Navigating",
-            map: "Mapping",
-            crawl: "Crawling",
-            formatOutput: "Formatting results",
-            spawnAgents: "Comparing across stores",
-            bashExec: "Processing data",
-          };
-
-          // Only look at tool calls in the LATEST assistant message — that's
-          // the in-progress turn. Otherwise old activities pile up on follow-ups.
-          let latestAssistant: typeof messages[number] | null = null;
-          for (let i = messages.length - 1; i >= 0; i--) {
-            if (messages[i].role === "assistant") { latestAssistant = messages[i]; break; }
-          }
-
-          if (latestAssistant) {
-            for (const part of latestAssistant.parts) {
-              if (!isToolPart(part)) continue;
-              const p = part as Record<string, unknown>;
-              const toolName = (p.toolName ?? (part.type as string).replace("tool-", "")) as string;
-              const input = (p.input ?? p.args ?? {}) as Record<string, unknown>;
-              const callId = String(p.toolCallId ?? p.id ?? `${toolName}-${activities.length}`);
-
-              let detail: string | null = null;
-              if (toolName === "search") {
-                // The server rewrites stale years before searching; mirror that
-                // in the display so the progress doesn't show "2024".
-                const fixYear = (q: string) => q.replace(/\b20\d{2}\b/g, (m) => (parseInt(m, 10) < new Date().getFullYear() ? String(new Date().getFullYear()) : m));
-                detail = typeof input.query === "string" ? trim(fixYear(input.query)) : null;
-              } else if (toolName === "scrape" || toolName === "map" || toolName === "crawl") {
-                const url = typeof input.url === "string" ? input.url
-                  : Array.isArray(input.urls) && typeof input.urls[0] === "string" ? input.urls[0] as string
-                  : null;
-                detail = url ? hostOf(url) : null;
-              } else if (toolName === "interact") {
-                const url = typeof input.url === "string" ? input.url : null;
-                const action = typeof input.action === "string" ? input.action
-                  : Array.isArray(input.actions) && input.actions[0] && typeof (input.actions[0] as { type?: string }).type === "string"
-                    ? (input.actions[0] as { type: string }).type
-                    : null;
-                detail = [url ? hostOf(url) : null, action].filter(Boolean).join(" · ") || null;
-              } else if (toolName === "bashExec") {
-                detail = typeof input.command === "string" ? trim(input.command, 50) : null;
-              } else if (toolName === "spawnAgents") {
-                const count = Array.isArray(input.tasks) ? input.tasks.length : null;
-                detail = count ? `${count} parallel workers` : null;
-              }
-
-              const key = `${callId}:${toolName}`;
-              if (seen.has(key)) continue;
-              seen.add(key);
-              activities.push({
-                tool: toolName,
-                label: verbMap[toolName] ?? toolName,
-                detail,
-              });
-            }
-          }
-
-          // Minimal: a single pulsing line showing the current action — no
-          // step history, no box. It vanishes the moment the run finishes.
-          const active = activities[activities.length - 1];
-          return (
-            <div className="flex items-center gap-10 mb-28 text-body-small">
-              <span className="relative flex h-8 w-8 flex-shrink-0">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-heat-100 opacity-50" />
-                <span className="relative inline-flex h-8 w-8 rounded-full bg-heat-100" />
-              </span>
-              <span className="text-accent-black/70 font-medium">{active?.label ?? "Working"}</span>
-              {active?.detail && (
-                <span className="text-black-alpha-40 truncate font-mono text-mono-x-small">{active.detail}</span>
-              )}
-            </div>
-          );
-        })()}
+        {isRunning && <ActivityIndicator messages={messages as unknown as ActivityMessage[]} />}
 
         {/* Session stats scoreboard */}
         {messages.length > 0 && (
