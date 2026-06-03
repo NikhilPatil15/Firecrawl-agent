@@ -328,7 +328,7 @@ function ActivityOrb() {
   );
 }
 
-type ActivityMessage = { role: string; parts: unknown[] };
+type ActivityMessage = { role: string; parts: Array<Record<string, unknown> & { type: string }> };
 
 const ACTIVITY_PHRASES: Record<string, string[]> = {
   search: ["Finding the best options", "Searching across stores", "Looking up prices", "Hunting for deals", "Checking availability", "Scanning for offers"],
