@@ -1643,7 +1643,9 @@ export default function AgentPage(props: AgentPageProps) {
                 type="button"
                 className="group inline-flex items-center gap-7 pl-11 pr-14 py-8 rounded-full bg-accent-white border border-border-faint text-body-small text-black-alpha-56 hover:text-accent-black hover:border-heat-40 hover:bg-heat-4 transition-all active:scale-[0.98]"
                 onClick={() => {
-                  setConfig({ ...config, prompt: item.text });
+                  const newConfig = { ...config, prompt: item.text };
+                  configRef.current = newConfig;
+                  setConfig(newConfig);
                   setHasSubmitted(true);
                   sendMessage({ text: item.text });
                 }}
