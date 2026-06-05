@@ -23,7 +23,7 @@ function sanitizeToolCallHistory(messages: BaseMessage[]): BaseMessage[] {
         id: tc.id,
         name: tc.name,
         type: "tool_call" as const,
-        args: tc.args ?? {},
+        args: (tc.args !== null && tc.args !== undefined && typeof tc.args === 'object' && !Array.isArray(tc.args)) ? tc.args : {},
       }));
       return new AIMessage({
         content: m.content ?? "",

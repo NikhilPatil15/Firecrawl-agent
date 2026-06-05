@@ -1608,34 +1608,19 @@ export default function AgentPage(props: AgentPageProps) {
           <div className="mt-24 flex flex-wrap items-center justify-center gap-8">
             {[
               {
-                label: "Earbuds under ₹2,000",
-                text: "Find noise-cancelling earbuds under ₹2,000 across Amazon.in, Flipkart and the official brand stores",
-                icon: <path d="M3 14v-1a9 9 0 0 1 18 0v1M21 17a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2zM3 17a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z" />,
-              },
-              {
-                label: "Student laptop deals",
-                text: "Compare student laptop prices and student discounts on Amazon.in, Flipkart, Croma and brand stores",
-                icon: <><rect x="3" y="4" width="18" height="12" rx="1" /><path d="M2 20h20" /></>,
-              },
-              {
-                label: "Fashion coupons",
-                text: "Find active coupon codes for Myntra and Ajio fashion sales",
-                icon: <><path d="M20 12a2 2 0 0 1 0-4V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v2a2 2 0 0 1 0 4v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2z" /><path d="M15 9l-6 6" /></>,
-              },
-              {
                 label: "Best phone under ₹20k",
-                text: "Find the best smartphone under ₹20,000 in India right now — compare Amazon.in, Flipkart and brand stores",
+                text: "Find the best smartphone under ₹20,000 in India in 2026",
                 icon: <><rect x="5" y="2" width="14" height="20" rx="2" /><path d="M12 18h.01" /></>,
               },
               {
-                label: "Monitor under ₹10k",
-                text: "Find the best monitor under ₹10,000 in India — compare Amazon.in, Flipkart, Croma and brand sites",
-                icon: <><rect x="2" y="3" width="20" height="14" rx="2" /><path d="M8 21h8M12 17v4" /></>,
+                label: "Student laptop deals",
+                text: "Find the best budget laptops for students in India in 2026 under ₹40,000",
+                icon: <><rect x="3" y="4" width="18" height="12" rx="1" /><path d="M2 20h20" /></>,
               },
               {
-                label: "Flipkart coupon codes",
-                text: "Find the latest active Flipkart coupon codes and discount offers right now",
-                icon: <><path d="M20 12a2 2 0 0 1 0-4V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v2a2 2 0 0 1 0 4v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2z" /><path d="M15 9l-6 6M9 9h.01M15 15h.01" /></>,
+                label: "Earbuds under ₹2,000",
+                text: "Find the best noise-cancelling earbuds under ₹2,000 in India in 2026",
+                icon: <path d="M3 14v-1a9 9 0 0 1 18 0v1M21 17a2 2 0 0 1-2 2h-1v-6h1a2 2 0 0 1 2 2zM3 17a2 2 0 0 0 2 2h1v-6H5a2 2 0 0 0-2 2z" />,
               },
             ].map((item) => (
               <button
@@ -1643,7 +1628,7 @@ export default function AgentPage(props: AgentPageProps) {
                 type="button"
                 className="group inline-flex items-center gap-7 pl-11 pr-14 py-8 rounded-full bg-accent-white border border-border-faint text-body-small text-black-alpha-56 hover:text-accent-black hover:border-heat-40 hover:bg-heat-4 transition-all active:scale-[0.98]"
                 onClick={() => {
-                  const newConfig = { ...config, prompt: item.text };
+                  const newConfig = { ...config, prompt: item.text, skills: ["e-commerce"] };
                   configRef.current = newConfig;
                   setConfig(newConfig);
                   setHasSubmitted(true);
