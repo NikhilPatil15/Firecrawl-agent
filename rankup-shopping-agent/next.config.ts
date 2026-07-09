@@ -12,6 +12,7 @@ const nextConfig: NextConfig = {
     "@langchain/core",
     "@langchain/anthropic",
     "@langchain/openai",
+    "@langchain/google",
     "@langchain/google-genai",
     "@langchain/langgraph",
     "@ai-sdk/google",
