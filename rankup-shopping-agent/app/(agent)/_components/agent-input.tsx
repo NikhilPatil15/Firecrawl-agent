@@ -178,7 +178,7 @@ export default function AgentInput({
         {/* Submit bar */}
         <div className="p-10 flex justify-between items-center border-t border-black-alpha-5">
           <div className="text-body-small text-black-alpha-32">
-            {config.maxSteps ?? 20} max steps
+            {config.maxSteps ?? 10} max steps
           </div>
 
           {isRunning ? (

@@ -14,6 +14,7 @@ const nextConfig: NextConfig = {
     "@langchain/openai",
     "@langchain/google-genai",
     "@langchain/langgraph",
+    "@ai-sdk/google",
   ],
   // Empty turbopack config silences Next 16's warning when a custom
   // `webpack:` function also exists. Turbopack ignores the webpack fn;

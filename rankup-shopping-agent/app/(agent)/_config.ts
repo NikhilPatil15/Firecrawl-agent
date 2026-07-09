@@ -10,26 +10,40 @@ type ModelRef = Pick<ModelConfig, "provider" | "model" | "baseURL">;
 export const config = {
 
   // ═══════════════════════════════════════════
-  // Anthropic (Claude)
+  // Google (Gemini 2.5 Flash) — ACTIVE
+  // ═══════════════════════════════════════════
+  // Using Gemini 2.0 Flash for everything — it has far higher quota/capacity
+  // than Pro tier, avoids "too much traffic" errors. Still very capable for
+  // agentic tool-use.
+  // Read from env (inlined at build time by Next.js for client-bundled code;
+  // for runtime changes, set them on your hosting platform and rebuild).
+  orchestrator: {
+    provider: (process.env.NEXT_PUBLIC_MODEL_PROVIDER ?? process.env.MODEL_PROVIDER ?? "google") as ModelConfig["provider"],
+    model: process.env.NEXT_PUBLIC_MODEL_ID ?? process.env.MODEL_ID ?? "gemini-3-flash-preview",
+  } satisfies ModelRef,
+  subAgent: {
+    provider: (process.env.NEXT_PUBLIC_MODEL_PROVIDER ?? process.env.MODEL_PROVIDER ?? "google") as ModelConfig["provider"],
+    model: process.env.SUB_AGENT_MODEL_ID ?? process.env.MODEL_ID ?? "gemini-3-flash-preview",
+  } satisfies ModelRef,
+  background: {
+    provider: (process.env.NEXT_PUBLIC_MODEL_PROVIDER ?? process.env.MODEL_PROVIDER ?? "google") as ModelConfig["provider"],
+    model: process.env.BACKGROUND_MODEL_ID ?? process.env.MODEL_ID ?? "gemini-3-flash-preview",
+  } satisfies ModelRef,
+
+  // ═══════════════════════════════════════════
+  // Anthropic (Claude) — DEPRECATED (credits exhausted)
   // ═══════════════════════════════════════════
   // The orchestrator is the "brain" — it must reliably perform checkout actions
   // and call formatOutput. Haiku refuses agentic actions and skips formatOutput,
   // so the orchestrator runs on Sonnet. Sub-agents (parallel scrapers) and
   // background tasks stay on Haiku for speed/cost. The speed_policy + no-planning
   // + no-parallel-fan-out changes keep Sonnet far faster than the original.
-  orchestrator: { provider: "anthropic", model: "claude-sonnet-4-6" } satisfies ModelRef,
-  subAgent:     { provider: "anthropic", model: "claude-haiku-4-5-20251001" } satisfies ModelRef,
-  background:   { provider: "anthropic", model: "claude-haiku-4-5-20251001" } satisfies ModelRef,
+  // orchestrator: { provider: "anthropic", model: "claude-sonnet-4-6" } satisfies ModelRef,
+  // subAgent:     { provider: "anthropic", model: "claude-haiku-4-5-20251001" } satisfies ModelRef,
+  // background:   { provider: "anthropic", model: "claude-haiku-4-5-20251001" } satisfies ModelRef,
 
   // ═══════════════════════════════════════════
-  // Google (Gemini)
-  // ═══════════════════════════════════════════
-  // orchestrator: { provider: "google", model: "gemini-3.1-pro-preview" } satisfies ModelRef,
-  // subAgent:     { provider: "google", model: "gemini-3-flash-preview" } satisfies ModelRef,
-  // background:   { provider: "google", model: "gemini-3.1-flash-lite-preview" } satisfies ModelRef,
-
-  // ═══════════════════════════════════════════
-  // OpenAI (GPT)
+  // OpenAI (GPT) — available as fallback
   // ═══════════════════════════════════════════
   // orchestrator: { provider: "openai", model: "gpt-5.4" } satisfies ModelRef,
   // subAgent:     { provider: "openai", model: "gpt-5.4" } satisfies ModelRef,
@@ -95,9 +109,8 @@ const MODEL_PRICING: Record<string, { input: number; output: number }> = {
   "gpt-5.4": { input: 2, output: 8 },
   "gpt-4.1": { input: 2, output: 8 },
   "o4-mini": { input: 1.1, output: 4.4 },
-  "gemini-3.1-pro-preview": { input: 1.25, output: 10 },
-  "gemini-3-flash-preview": { input: 0.15, output: 0.6 },
-  "gemini-3.1-flash-lite-preview": { input: 0.04, output: 0.15 },
+  "gemini-2.5-pro-preview-05-06": { input: 1.25, output: 10 },
+  "gemini-3-flash-preview": { input: 0.5, output: 3 },
 };
 
 export function estimateCost(inputTokens: number, outputTokens: number, model?: string): number {

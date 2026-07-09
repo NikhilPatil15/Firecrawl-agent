@@ -379,7 +379,7 @@ function GeneralView({
           min={1}
           max={50}
           className="w-120 bg-background-base border border-black-alpha-8 rounded-12 px-16 py-12 text-body-medium focus:border-heat-100 focus:outline-none"
-          value={config.maxSteps ?? 20}
+          value={config.maxSteps ?? 10}
           onChange={(e) => onChange({ ...config, maxSteps: parseInt(e.target.value) || 20 })}
         />
       </div>
@@ -586,7 +586,7 @@ export default function SettingsPanel({ config, onChange }: { config: AgentConfi
                 <ProviderModelIcon icon={AVAILABLE_MODELS[config.model.provider]?.find(m => m.id === config.model.model)?.icon ?? "openai"} size={16} />
                 <span className="text-body-small text-black-alpha-40">{AVAILABLE_MODELS[config.model.provider]?.find(m => m.id === config.model.model)?.name ?? config.model.model}</span>
                 <span className="text-black-alpha-12">|</span>
-                <span className="text-body-small text-black-alpha-40">{config.maxSteps ?? 20} steps</span>
+                <span className="text-body-small text-black-alpha-40">{config.maxSteps ?? 10} steps</span>
                 {config.subAgentModel && (
                   <>
                     <span className="text-black-alpha-12">|</span>

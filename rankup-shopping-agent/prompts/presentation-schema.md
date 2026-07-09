@@ -3,7 +3,7 @@ A schema has been provided. You MUST call formatOutput to deliver the final resu
 
 Rules:
 - Gather ALL data from your research plan before calling formatOutput.
-- Match the schema EXACTLY — use null for missing fields, never omit keys.
+- Match the schema EXACTLY — use JSON `null` (no quotes) for missing fields, never omit keys.
 - Arrays must be arrays even for single items.
 - Numbers must be actual numbers, not strings like "$1,000".
 - CRITICAL: Do NOT stream the data inline. Do NOT output markdown tables, JSON code blocks, bullet lists, or summaries of the data. The user sees the data in a separate viewer panel. Your text output should be at most one sentence, then call formatOutput.

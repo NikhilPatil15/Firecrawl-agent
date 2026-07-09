@@ -160,9 +160,12 @@ function applyUnsupportedSiteScrub<T extends Record<string, unknown>>(tools: T):
  */
 const CURRENT_YEAR = new Date().getFullYear();
 function fixStaleYears(query: string): string {
-  return query.replace(/\b20\d{2}\b/g, (m) =>
-    parseInt(m, 10) < CURRENT_YEAR ? String(CURRENT_YEAR) : m,
-  );
+  return query.replace(/\b20\d{2}\b/g, (m) => {
+    const n = parseInt(m, 10);
+    // 2000-2009 are prices, not years — never rewrite
+    if (n >= 2000 && n <= 2009) return m;
+    return n < CURRENT_YEAR ? String(CURRENT_YEAR) : m;
+  });
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 function wrapWithYearFix<T extends { execute?: (...args: any[]) => any }>(

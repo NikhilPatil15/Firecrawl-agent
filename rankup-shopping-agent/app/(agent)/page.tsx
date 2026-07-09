@@ -173,9 +173,10 @@ const defaultConfig: AgentConfig = {
   model: defaultModel,
   skills: ["e-commerce"],
   subAgents: [],
-  // Tight enough to stay fast, with headroom for checkout flows (several
-  // interact steps). The speed_policy keeps most search/compare runs well under.
-  maxSteps: 36,
+  // 10 keeps Gemini from getting stuck in search loops while allowing 2-3
+  // search + 2-3 scrapeBash + grep + formatOutput + text. Checkout flows
+  // should increase this.
+  maxSteps: 10,
 };
 
 const PLACEHOLDER_PHRASES = [
@@ -1809,7 +1810,13 @@ export default function AgentPage(props: AgentPageProps) {
         )}
 
         {/* Conversation feed — user/assistant turns in order */}
-        {messages.map((msg, msgIdx) => {
+        {/* Deduplicate by msg.id — keep only the last occurrence (values mode has full data) */}
+        {messages.filter((msg, i, arr) => {
+          for (let j = arr.length - 1; j >= 0; j--) {
+            if (arr[j].id === msg.id) return j === i;
+          }
+          return true;
+        }).map((msg, msgIdx) => {
           if (msg.role === "user") {
             const text = msg.parts
               .filter((p) => p.type === "text")

@@ -42,6 +42,14 @@ export default function StreamdownBlock({
   ];
   for (const p of patterns) cleaned = cleaned.replace(p, "");
 
+  // Strip markdown bold/italic markers — Streamdown doesn't render them, and
+  // they show as literal ** __ asterisks in the UI.
+  cleaned = cleaned
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/__(.+?)__/g, "$1")
+    .replace(/\*(.+?)\*/g, "$1")
+    .replace(/_(.+?)_/g, "$1");
+
   cleaned = cleaned
     .replace(/\bFirecrawl\b/gi, "")
     .replace(/[ \t]{2,}/g, " ")

@@ -9,26 +9,59 @@ export const formatOutput = tool({
   description:
     "Format the final output as JSON or text. Call this when you have collected all data and are ready to present results.",
   inputSchema: z.object({
-    format: z.enum(["json", "text"]).describe("Output format"),
-    data: z.unknown().describe("The data to format — can be a JSON string, object, array, or plain text"),
+    // Use z.string instead of z.enum(...) to avoid JSON-schema generators
+    // emitting unsupported keywords (e.g. `const`) during tool schema conversion.
+    format: z.string().optional().describe('Output format ("json" | "text")'),
+    data: z
+      .unknown()
+      .describe(
+        "The data to format — can be a JSON string, object, array, or plain text",
+      ),
   }),
   execute: async ({ format, data }) => {
-    switch (format) {
+    // The model sometimes nests { format, products, description } directly
+    // inside `data` instead of at the tool's top level. Unpack gracefully.
+    let resolvedFormat = format;
+    let resolvedData = data;
+    if (data && typeof data === "object" && !Array.isArray(data)) {
+      const d = data as Record<string, unknown>;
+      if (!resolvedFormat && typeof d.format === "string") {
+        resolvedFormat = d.format;
+      }
+      // If data has its own `data` key, the model double-nested it
+      if (d.data !== undefined) {
+        resolvedData = d.data;
+      }
+    }
+    if (!resolvedFormat) resolvedFormat = "json";
+    if (resolvedFormat !== "json" && resolvedFormat !== "text") {
+      return {
+        format: "json",
+        content: JSON.stringify(
+          { error: "invalid_format", message: 'format must be "json" or "text"' },
+          null,
+          2,
+        ),
+      };
+    }
+
+    switch (resolvedFormat) {
       case "json": {
-        if (typeof data === "string") {
+        if (typeof resolvedData === "string") {
           try {
-            JSON.parse(data);
-            return { format: "json", content: data };
+            JSON.parse(resolvedData);
+            return { format: "json", content: resolvedData };
           } catch {
-            return { format: "json", content: JSON.stringify(data, null, 2) };
+            return { format: "json", content: JSON.stringify(resolvedData, null, 2) };
           }
         }
-        return { format: "json", content: JSON.stringify(data, null, 2) };
+        return { format: "json", content: JSON.stringify(resolvedData, null, 2) };
       }
       case "text":
         return {
           format: "text",
-          content: typeof data === "string" ? data : JSON.stringify(data, null, 2),
+          content:
+            typeof resolvedData === "string" ? resolvedData : JSON.stringify(resolvedData, null, 2),
         };
     }
   },
@@ -37,7 +70,9 @@ export const formatOutput = tool({
 // --- bashExec ---
 
 type BashInstance = {
-  exec: (cmd: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  exec: (
+    cmd: string,
+  ) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
 };
 
 const g = globalThis as unknown as { __firecrawlBash?: BashInstance };
@@ -62,7 +97,9 @@ export async function initBashWithFiles(files: Record<string, string>) {
   }
 }
 
-export async function listBashFiles(): Promise<{ path: string; size: number }[]> {
+export async function listBashFiles(): Promise<
+  { path: string; size: number }[]
+> {
   const bash = getSharedBash();
   if (!bash) return [];
   const result = await bash.exec("ls -lR /data 2>/dev/null");
@@ -77,7 +114,8 @@ export async function listBashFiles(): Promise<{ path: string; size: number }[]>
       if (parts.length >= 5) {
         const size = parseInt(parts[4]) || 0;
         const name = parts.slice(8).join(" ") || parts[parts.length - 1];
-        if (size > 0 && name) files.push({ path: `${currentDir}/${name}`, size });
+        if (size > 0 && name)
+          files.push({ path: `${currentDir}/${name}`, size });
       }
     }
   }
@@ -119,7 +157,11 @@ export const bashExec = tool({
 
 // --- exportSkill ---
 
-const firecrawlMethodEnum = z.enum([
+const firecrawlMethodEnum = z
+  .string()
+  .describe("The Firecrawl method or tool used in this step (string literal)");
+
+const FIRECRAWL_METHODS = new Set([
   "search",
   "scrape",
   "scrape:query",
@@ -133,27 +175,68 @@ const firecrawlMethodEnum = z.enum([
   "agent",
   "bashExec",
   "formatOutput",
-]).describe("The Firecrawl method or tool used in this step");
+]);
 
 const exportSkillInputSchema = z.object({
-  name: z.string().describe("Kebab-case skill slug, e.g. 'yahoo-finance-financials'. Must be generic, not entity-specific."),
-  description: z.string().describe("One-line description with {PARAM} placeholders for variable parts"),
-  parameters: z.array(z.object({
-    name: z.string().describe("Parameter name, e.g. TICKER, URL, QUERY"),
-    description: z.string().describe("What this parameter represents"),
-    example: z.string().describe("Example value, e.g. 'AAPL', 'https://example.com'"),
-  })).describe("Variable parts of the procedure that change per run"),
-  procedure: z.array(z.object({
-    method: firecrawlMethodEnum,
-    description: z.string().describe("What this step does, using {PARAM} placeholders"),
-    input: z.string().optional().describe("The key input: URL pattern, query string, extraction prompt, or code snippet"),
-  })).describe("Ordered steps — each references a specific Firecrawl method"),
-  dataFields: z.array(z.string()).optional().describe("Field names the procedure extracts"),
-  examplePrompts: z.array(z.string()).optional().describe("Example user prompts with specific values filled in"),
-  targets: z.array(z.object({
-    urlPattern: z.string().describe("URL pattern with {PARAM} placeholders"),
-    fallbackQuery: z.string().optional().describe("Search query to rediscover this URL if stale"),
-  })).optional().describe("Key URL patterns used"),
+  name: z
+    .string()
+    .describe(
+      "Kebab-case skill slug, e.g. 'yahoo-finance-financials'. Must be generic, not entity-specific.",
+    ),
+  description: z
+    .string()
+    .describe(
+      "One-line description with {PARAM} placeholders for variable parts",
+    ),
+  parameters: z
+    .array(
+      z.object({
+        name: z.string().describe("Parameter name, e.g. TICKER, URL, QUERY"),
+        description: z.string().describe("What this parameter represents"),
+        example: z
+          .string()
+          .describe("Example value, e.g. 'AAPL', 'https://example.com'"),
+      }),
+    )
+    .describe("Variable parts of the procedure that change per run"),
+  procedure: z
+    .array(
+      z.object({
+        method: firecrawlMethodEnum,
+        description: z
+          .string()
+          .describe("What this step does, using {PARAM} placeholders"),
+        input: z
+          .string()
+          .optional()
+          .describe(
+            "The key input: URL pattern, query string, extraction prompt, or code snippet",
+          ),
+      }),
+    )
+    .describe("Ordered steps — each references a specific Firecrawl method"),
+  dataFields: z
+    .array(z.string())
+    .optional()
+    .describe("Field names the procedure extracts"),
+  examplePrompts: z
+    .array(z.string())
+    .optional()
+    .describe("Example user prompts with specific values filled in"),
+  targets: z
+    .array(
+      z.object({
+        urlPattern: z
+          .string()
+          .describe("URL pattern with {PARAM} placeholders"),
+        fallbackQuery: z
+          .string()
+          .optional()
+          .describe("Search query to rediscover this URL if stale"),
+      }),
+    )
+    .optional()
+    .describe("Key URL patterns used"),
 });
 
 type ExportSkillInput = z.infer<typeof exportSkillInputSchema>;
@@ -167,7 +250,12 @@ function renderSkillMd(input: ExportSkillInput): string {
   lines.push("category: Generated");
   lines.push("---");
   lines.push("");
-  lines.push(`# ${input.name.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ")}`);
+  lines.push(
+    `# ${input.name
+      .split("-")
+      .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+      .join(" ")}`,
+  );
   lines.push("");
 
   // Parameters
@@ -242,6 +330,28 @@ export function createExportSkillTool(skillsDir?: string) {
       "Each procedure step must reference the specific Firecrawl method used: search, scrape (with query, extract, or markdown), interact (with code or prompt), map, crawl, extract, agent, bashExec, or formatOutput.",
     inputSchema: exportSkillInputSchema,
     execute: async (input) => {
+      // Runtime validation to replace z.enum-based validation (which can
+      // cause schema conversion to emit unsupported JSON-schema keywords).
+      if (!input?.procedure?.length) {
+        return {
+          name: input?.name ?? "exported-skill",
+          skillMd: "",
+          saved: false,
+          error: "missing_procedure",
+        };
+      }
+      for (const step of input.procedure) {
+        if (!FIRECRAWL_METHODS.has(step.method)) {
+          return {
+            name: input.name,
+            skillMd: "",
+            saved: false,
+            error: "invalid_method",
+            message: `Invalid procedure.method "${step.method}".`,
+          };
+        }
+      }
+
       const skillMd = renderSkillMd(input);
 
       if (skillsDir) {

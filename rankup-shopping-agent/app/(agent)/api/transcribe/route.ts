@@ -30,7 +30,7 @@ export async function POST(req: Request) {
   try {
     const google = createGoogleGenerativeAI({ apiKey: key });
     const { text } = await generateText({
-      model: google(model),
+      model: google(model) as any,
       messages: [
         {
           role: "user",

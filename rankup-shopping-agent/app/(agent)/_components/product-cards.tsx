@@ -71,6 +71,10 @@ const COUPON_KEYS = new Set([
 const WRAPPER_KEYS = new Set([
   "products", "items", "results", "data", "deals", "coupons", "offers", "list",
   "recommendations", "comparison", "comparisons", "stores", "options",
+  // Category-specific keys the model may use directly:
+  "laptops", "phones", "smartphones", "earbuds", "headphones", "monitors",
+  "keyboards", "mice", "tablets", "speakers", "cameras", "printers",
+  "shoes", "clothing", "watches", "backpacks", "books",
 ]);
 
 function keyHas(keys: string[], set: Set<string>): boolean {
@@ -175,7 +179,7 @@ function pickFirst(obj: Record<string, unknown>, keys: string[]): unknown {
 function resolveImageUrl(url: string | null, base: string | null): string | null {
   if (!url || typeof url !== "string") return null;
   const u = url.trim();
-  if (!u) return null;
+  if (!u || u === "null" || u === "undefined") return null;
   if (/^https?:\/\//i.test(u)) return u;
   if (u.startsWith("//")) return "https:" + u;
   if (u.startsWith("data:")) return u;
@@ -259,7 +263,10 @@ function normalizeProduct(raw: Record<string, unknown>, index: number): Normaliz
 
   const source = (pickFirst(raw, [...SOURCE_KEYS]) ?? raw.__sourceHint ?? null) as string | null;
   const sourceUrl = (pickFirst(raw, [...SOURCE_URL_KEYS]) ?? null) as string | null;
-  const imageUrl = resolveImageUrl(rawImageUrl, sourceUrl);
+  // Also check product_url as a fallback base for resolving relative images
+  const productUrl = (pickFirst(raw, ["product_url", "productUrl"]) ?? null) as string | null;
+  const imageBase = sourceUrl || productUrl;
+  const imageUrl = resolveImageUrl(rawImageUrl, imageBase);
 
   const bestPickRaw = raw.bestPick ?? raw.best_pick ?? raw.recommended ?? false;
   const bestPick = bestPickRaw === true || bestPickRaw === "true";
@@ -279,6 +286,20 @@ export function extractProducts(data: string): NormalizedProduct[] {
       .map((item, i) => normalizeProduct(item as Record<string, unknown>, i));
   } catch {
     return [];
+  }
+}
+
+export function extractSummaryFromData(data: string): string | null {
+  try {
+    const parsed = JSON.parse(data);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const obj = parsed as Record<string, unknown>;
+      const s = obj.summary ?? obj.description;
+      if (typeof s === "string" && s.trim().length > 0) return s.trim();
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 
@@ -407,6 +428,7 @@ function ProductImage({
             className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.06]"
             onError={() => setImgError(true)}
             referrerPolicy="no-referrer"
+
             loading="lazy"
           />
           {/* legibility scrim at the bottom edge */}
@@ -682,6 +704,7 @@ interface ProductCardsProps {
 
 export function ProductCards({ data, onViewJson, onSelect }: ProductCardsProps) {
   const products = useMemo(() => extractProducts(data), [data]);
+  const summary = useMemo(() => extractSummaryFromData(data), [data]);
 
   if (products.length === 0) return null;
 
@@ -692,6 +715,15 @@ export function ProductCards({ data, onViewJson, onSelect }: ProductCardsProps) 
 
   return (
     <div className="flex flex-col gap-14">
+      {/* Summary narrative from formatOutput data — split on double-newline for paragraphs */}
+      {summary && (
+        <div className="flex flex-col gap-8">
+          {summary.split(/\n\n+/).filter(Boolean).map((para, i) => (
+            <p key={i} className="text-body-medium text-black-alpha-64 leading-relaxed">{para}</p>
+          ))}
+        </div>
+      )}
+
       {/* Meta row */}
       <div className="flex items-center gap-8 text-mono-x-small">
         <span className="inline-flex items-center gap-6 uppercase tracking-wider text-black-alpha-48 tabular-nums">

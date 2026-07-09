@@ -2,6 +2,7 @@ import { generateText } from "ai";
 import { createDeepAgent, type DeepAgent, type SubAgent } from "deepagents";
 import { tool as lcTool } from "langchain";
 import { initChatModel } from "langchain/chat_models/universal";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { resolveModel } from "./resolve-model";
 import { discoverSkills, getDefaultSkillsDir } from "./skills/discovery";
 import { buildFirecrawlToolkit } from "./toolkit";
@@ -75,7 +76,20 @@ type RunState = {
 
 const MAX_SCHEMA_REPAIRS = 3;
 
+/** Recursively delete `const` from JSON Schema (Gemini rejects it). */
+function stripConstDeep(schema: unknown): void {
+  if (!schema || typeof schema !== "object") return;
+  if (Array.isArray(schema)) { for (const item of schema) stripConstDeep(item); return; }
+  delete (schema as Record<string, unknown>).const;
+  for (const v of Object.values(schema as Record<string, unknown>)) stripConstDeep(v);
+}
+
 function aiToolToLc(name: string, t: any) {
+  // Convert Zod schema → JSON Schema, strip `const` (Gemini rejects it),
+  // so LangChain's Google provider never sees `const` in its conversion.
+  const jsonSchema = zodToJsonSchema(t.inputSchema as any);
+  stripConstDeep(jsonSchema);
+
   return lcTool(
     async (input: unknown, config?: { configurable?: { runState?: RunState } }) => {
       const runState = config?.configurable?.runState;
@@ -125,7 +139,7 @@ function aiToolToLc(name: string, t: any) {
 
       return typeof result === "string" ? result : JSON.stringify(result);
     },
-    { name, description: t.description ?? "", schema: t.inputSchema as never },
+    { name, description: t.description ?? "", schema: jsonSchema as never },
   );
 }
 
@@ -552,12 +566,11 @@ Do not use emojis.${schemaSystemLine}`,
     steps: StepDetail[],
     format?: string,
   ): { format: string; content: string } | null {
-    if (!format) return null;
     for (const step of [...steps].reverse()) {
       for (const tr of step.toolResults) {
         if (tr.name === "formatOutput") {
           const parsed = (tr.output ?? {}) as { format?: string; content?: string };
-          if (parsed.content) return { format: parsed.format ?? format, content: parsed.content };
+          if (parsed.content) return { format: parsed.format ?? format ?? "json", content: parsed.content };
         }
       }
     }

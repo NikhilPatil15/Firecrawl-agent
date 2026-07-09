@@ -22,9 +22,8 @@ export const AVAILABLE_MODELS = {
     { id: "gpt-5.4-nano", name: "GPT-5.4 nano", icon: "openai" },
   ],
   google: [
-    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", icon: "gemini" },
     { id: "gemini-2.5-pro-preview-05-06", name: "Gemini 2.5 Pro", icon: "gemini" },
-    { id: "gemini-2.5-flash-preview-05-20", name: "Gemini 2.5 Flash", icon: "gemini" },
+    { id: "gemini-3-flash-preview", name: "Gemini 3 Flash", icon: "gemini" },
   ],
   // Spark 1 models are experimental and not yet available for BYOK.
   // firecrawl: [

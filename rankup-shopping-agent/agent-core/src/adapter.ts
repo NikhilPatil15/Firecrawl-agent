@@ -1,4 +1,5 @@
 import { tool as lcTool } from "langchain";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { z } from "zod";
 
 /**
@@ -47,6 +48,14 @@ export function coerceStringifiedJson(input: unknown): unknown {
   return changed ? out : input;
 }
 
+/** Recursively delete `const` keys (Gemini rejects them in API schemas). */
+function stripConstDeep(node: unknown): void {
+  if (!node || typeof node !== "object") return;
+  if (Array.isArray(node)) { for (const item of node) stripConstDeep(item); return; }
+  delete (node as Record<string, unknown>).const;
+  for (const v of Object.values(node as Record<string, unknown>)) stripConstDeep(v);
+}
+
 /**
  * Wrap a single AI SDK tool so it can be used by Deep Agents / LangChain.
  *
@@ -58,19 +67,23 @@ export function aiToLc(name: string, t: AISDKTool) {
   if (!t.execute) {
     throw new Error(`Tool "${name}" has no execute function`);
   }
-  // Wrap the schema with z.preprocess so stringified JSON is coerced
-  // BEFORE Zod validates the input — not after.
-  const schema = z.preprocess(coerceStringifiedJson, t.inputSchema as z.ZodTypeAny);
+  // Pre-convert Zod schema → JSON Schema, strip `const` (Gemini rejects it),
+  // then pass the plain JSON Schema to LangChain so the Google provider never
+  // sees `const` in its function-declaration conversion.
+  const jsonSchema = zodToJsonSchema(t.inputSchema as z.ZodTypeAny);
+  stripConstDeep(jsonSchema);
 
   return lcTool(
     async (input: unknown) => {
-      const result = await t.execute!(input as never);
+      // Stringified-JSON coercion still runs here — just not via z.preprocess
+      // (we use plain JSON Schema for LangChain validation instead of Zod).
+      const result = await t.execute!(coerceStringifiedJson(input) as never);
       return typeof result === "string" ? result : JSON.stringify(result);
     },
     {
       name,
       description: t.description ?? "",
-      schema: schema as never,
+      schema: jsonSchema as never,
     },
   );
 }

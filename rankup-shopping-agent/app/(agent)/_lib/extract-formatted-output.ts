@@ -45,7 +45,10 @@ export function extractMessageFormatted(msg: UIMessage): FormattedOutput & { str
     if (!content && input.data !== undefined) {
       content = typeof input.data === "string" ? input.data : JSON.stringify(input.data, null, 2);
     }
-    return { format: format as FormattedOutput["format"], content: content || "...", streaming: true };
+    // If state is output-available/result and we have content from input.data,
+    // the tool completed but the bridge didn't populate output — mark complete.
+    const done = state === "output-available" || state === "result";
+    return { format: format as FormattedOutput["format"], content: content || "...", streaming: !done };
   }
   return null;
 }
