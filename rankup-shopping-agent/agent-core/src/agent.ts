@@ -152,7 +152,11 @@ function aiToolkitToLc(tools: Record<string, any>) {
 // without a per-provider switch case.
 async function resolveLcModel(config: ModelConfig, apiKeys?: Record<string, string>) {
   const keyFor = config.apiKey ?? apiKeys?.[config.provider];
-  const modelName = `${config.provider}:${config.model}`;
+  // LangChain's initChatModel parses "provider:" prefix and maps it to a
+  // package name. Our "google" provider uses Gemini (google-genai), not
+  // Vertex AI (@langchain/google). Tell LangChain explicitly.
+  const provider = config.provider === "google" ? "google-genai" : config.provider;
+  const modelName = `${provider}:${config.model}`;
   const opts: Record<string, unknown> = {};
   if (keyFor) opts.apiKey = keyFor;
   if (config.baseURL) opts.configuration = { baseURL: config.baseURL };
