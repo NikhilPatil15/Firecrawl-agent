@@ -2,6 +2,7 @@ import { generateText } from "ai";
 import { createDeepAgent, type DeepAgent, type SubAgent } from "deepagents";
 import { tool as lcTool } from "langchain";
 import { initChatModel } from "langchain/chat_models/universal";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { resolveModel } from "./resolve-model";
 import { discoverSkills, getDefaultSkillsDir } from "./skills/discovery";
@@ -148,19 +149,28 @@ function aiToolkitToLc(tools: Record<string, any>) {
 }
 
 // --- Model resolver: ModelConfig → LangChain chat model for Deep Agents ---
-// Uses langchain's universal `initChatModel` factory, so every provider works
-// without a per-provider switch case.
+// Uses direct imports per provider instead of langchain's initChatModel,
+// because initChatModel does runtime dynamic imports that fail on serverless
+// deployments (the bundler can't track them).
 async function resolveLcModel(config: ModelConfig, apiKeys?: Record<string, string>) {
   const keyFor = config.apiKey ?? apiKeys?.[config.provider];
-  // LangChain's initChatModel parses "provider:" prefix and maps it to a
-  // package name. Our "google" provider uses Gemini (google-genai), not
-  // Vertex AI (@langchain/google). Tell LangChain explicitly.
-  const provider = config.provider === "google" ? "google-genai" : config.provider;
-  const modelName = `${provider}:${config.model}`;
   const opts: Record<string, unknown> = {};
   if (keyFor) opts.apiKey = keyFor;
   if (config.baseURL) opts.configuration = { baseURL: config.baseURL };
-  return initChatModel(modelName, opts);
+
+  switch (config.provider) {
+    case "google": {
+      const params: Record<string, unknown> = { model: config.model };
+      if (keyFor) params.apiKey = keyFor;
+      if (config.baseURL) params.baseUrl = config.baseURL;
+      return new ChatGoogleGenerativeAI(params as never);
+    }
+    default: {
+      // Fall back to initChatModel for providers we don't explicitly handle.
+      const modelName = `${config.provider}:${config.model}`;
+      return initChatModel(modelName, opts);
+    }
+  }
 }
 
 /**
